@@ -7,7 +7,8 @@
 // device flow with PKCE, client mcode-public): nothing is read from or
 // written to MiniMax Code's own sign-in (~/.minimax). Its chats are
 // Anthropic messages at <agent>/mavis/api/v1/llm/v1/messages, sent with
-// MiniMax Code's headers. No check-in is made for the account.
+// MiniMax Code's headers. The account's daily check-in (每日签到) is
+// claimed with the same token, on the minimax-cloud endpoints.
 
 import { createHash, randomBytes, randomUUID } from "node:crypto"
 
@@ -494,6 +495,75 @@ function usageOf(m, windows = []) {
   }
 }
 
+// ---- check-in ----------------------------------------------------------------
+
+// MiniMax pays a few credits for the daily check-in (每日签到). The panel
+// lists the month's days — status 1 not started, 2 claimable, 3 claimed,
+// 4 not available — and the claim answers 1 claimed now or 2 already today.
+// The account's Bearer token is enough on the minimax-cloud endpoints (no
+// webview JWT's md5 signature is needed), as quota-hub's minimax2api worked
+// out. Tests point site.llm at a fake of their own.
+const checkinTZ = () => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai" } catch { return "Asia/Shanghai" }
+}
+
+async function checkinCall(site, access, method, path, body) {
+  const res = await fetch(site.llm + path, {
+    method,
+    headers: {
+      Accept: "application/json",
+      Authorization: "Bearer " + access,
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    signal: AbortSignal.timeout(20000),
+  })
+  if (res.status === 401 || res.status === 403) throw new SignInExpired(site)
+  const text = await res.text()
+  let out
+  try { out = JSON.parse(text) } catch { throw new Error(`check-in: HTTP ${res.status}: ${text.trim().slice(0, 120)}`) }
+  const code = out?.base_resp?.status_code
+  if (code !== undefined && code !== 0) throw new Error(`check-in: ${out?.base_resp?.status_msg ?? "error " + code} (${code})`)
+  return out
+}
+
+// checkinOf reads the panel and claims today: claimed (checked in now,
+// credit = the points it paid), done (already today), inactive (the day
+// hasn't started, or the panel has none), ineligible (the day isn't
+// available); a throw is failed. streak counts the claimed days up to and
+// including today.
+async function checkinOf(site, access) {
+  const tz = checkinTZ()
+  const q = "?timezone_id=" + encodeURIComponent(tz)
+  const panel = await checkinCall(site, access, "GET", "/minimax-cloud/api/v1/signin/status" + q)
+  const days = Array.isArray(panel?.data?.days) ? panel.data.days : []
+  const today = days.find((d) => d?.is_today) ?? days[days.length - 1]
+  // the claimed days before today
+  const streakBefore = () => {
+    let n = 0
+    for (let i = days.length - 1; i >= 0; i--) {
+      const d = days[i]
+      if (d?.is_today) continue
+      if (d?.status === 3) n++
+      else break
+    }
+    return n
+  }
+  if (!today) return { outcome: "inactive" }
+  if (today.status === 3) return { outcome: "done", streak: streakBefore() + 1 }
+  if (today.status === 2) {
+    const claim = await checkinCall(site, access, "POST", "/minimax-cloud/api/v1/signin/claim" + q, {})
+    const r = pos(claim?.data, "claim_result")
+    const credit = pos(claim?.data, "points")
+    const got = { ...(credit ? { credit } : {}), streak: streakBefore() + 1 }
+    if (r === 1) return { outcome: "claimed", ...got }
+    if (r === 2) return { outcome: "done", ...got }
+    throw new Error(`check-in: unknown claim_result ${JSON.stringify(claim?.data?.claim_result)}`)
+  }
+  if (today.status === 4) return { outcome: "ineligible" }
+  return { outcome: "inactive" } // 1: the day hasn't started
+}
+
 // ---- requests -----------------------------------------------------------------
 
 // QUOTA says a refusal is about the account's credits or plan running out.
@@ -698,7 +768,7 @@ function makePlugin(site) {
             },
           }
         },
-        // the account's credits and M Plan; nothing is claimed (no check-in)
+        // the account's credits and M Plan
         async usage(getAuth) {
           const auth = await getAuth()
           if (auth?.type !== "oauth" || !auth.access) return { error: "not signed in" }
@@ -728,6 +798,24 @@ function makePlugin(site) {
             }
           } catch (e) {
             return { error: e?.message ?? String(e), signIn: "kept" }
+          }
+        },
+        // the daily check-in (每日签到): magpie runs it once a day per
+        // account, and its Check in now button asks right away; the
+        // outcome lands on the account's Usage card.
+        async checkin(getAuth) {
+          const auth = await getAuth()
+          if (auth?.type !== "oauth" || !auth.access) return { outcome: "failed", message: "not signed in" }
+          let a
+          try {
+            ;({ a } = await fresh(getAuth))
+          } catch (e) {
+            return { outcome: "failed", message: e?.message ?? String(e), ...(e?.signIn ? { signIn: e.signIn } : {}) }
+          }
+          try {
+            return await checkinOf(site, a.access)
+          } catch (e) {
+            return { outcome: "failed", message: e?.message ?? String(e), ...(e?.signIn ? { signIn: e.signIn } : {}) }
           }
         },
         methods: [
@@ -776,4 +864,4 @@ export const MiniMaxCodeAuthPlugin = makePlugin(SITES["minimax-code"])
 export const MiniMaxCodeGlobalAuthPlugin = makePlugin(SITES["minimax-code-global"])
 
 // for tests
-export const _internal = { SITES, MODELS, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, variants, renewing, renewed, startDevice, pollDevice }
+export const _internal = { SITES, MODELS, signed, md5, parseModels, planWindows, membershipOf, usageOf, credits, variants, renewing, renewed, startDevice, pollDevice, checkinOf }

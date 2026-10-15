@@ -119,6 +119,11 @@ inactive, ineligible, with the streak — lands on the account's Usage card.
 OpenCode doesn't call this hook: there, check in from MiniMax Code or
 MiniMax's site.
 
+Known gap: on the China site the day can read claimed while the credits
+never land — as of October 2026 the CN upstream grants nothing for the
+check-in (the credit pool stays empty), where the international site pays
+out normally. The card shows what the account's own APIs report.
+
 ## Not here
 
 - **No sign-out.** Signing out doesn't revoke the token on MiniMax's side.

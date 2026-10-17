@@ -4,6 +4,7 @@
 import "./nonet.mjs"
 import { afterEach, expect, test } from "bun:test"
 import { MiniMaxCodeAuthPlugin } from "./index.mjs"
+import { _internal } from "./index.mjs"
 import { fakeMiniMax, json } from "./fake.mjs"
 
 let f
@@ -81,6 +82,21 @@ test("the check-in requests are signed like the account API", async () => {
     expect(r.query.get("timezone_offset")).toBe(String(new Date().getTimezoneOffset() * -60))
   }
   expect(claim?.text).toBe("{}")
+})
+
+test("the China panel is asked on the chat host, not the account host", async () => {
+  f = fakeMiniMax()
+  const was = { ..._internal.SITES["minimax-code"] }
+  Object.assign(_internal.SITES["minimax-code"], {
+    agent: "https://account.example",
+    llm: f.origin,
+  })
+  f.route("GET " + STATUS, () => json({ base_resp: { status_code: 0 }, data: { days: week(1, { status: 3 }) } }))
+  const plugin = await MiniMaxCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const out = await plugin.auth.checkin(async () => auth)
+  expect(out).toEqual({ outcome: "done", credit: 10, streak: 1 })
+  expect(f.seen.filter((r) => r.path === STATUS)).toHaveLength(1)
+  Object.assign(_internal.SITES["minimax-code"], was)
 })
 
 test("a day that hasn't started is inactive", async () => {

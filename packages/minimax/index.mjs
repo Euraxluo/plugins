@@ -316,8 +316,8 @@ class SignInExpired extends Error {
 // signed is a request of MiniMax Code's account API, signed as mcode signs
 // one: yy over the path and query, the body ("{}" for a GET) and the time;
 // x-signature over the time (and the body of a POST).
-function signed(site, path, { access, userID, body, now = Date.now(), tz = new Date().getTimezoneOffset() * -60, platform = process.platform } = {}) {
-  const url = new URL(path, site.agent)
+function signed(site, path, { access, userID, body, origin = site.agent, now = Date.now(), tz = new Date().getTimezoneOffset() * -60, platform = process.platform } = {}) {
+  const url = new URL(path, origin)
   url.search = new URLSearchParams({
     device_platform: "mcode", biz_id: "3", app_id: "3001", version_code: "22201",
     unix: String(now), timezone_offset: String(tz), sys_language: site.lang, lang: site.lang,
@@ -504,7 +504,7 @@ function usageOf(m, windows = []) {
 // of the account API: the gateway checks the signature, and a Bearer-only
 // Bun fetch is not what MiniMax Code sends.
 async function checkinCall(site, access, method, path, body) {
-  const opts = { access }
+  const opts = { access, origin: site.llm }
   if (body !== undefined) opts.body = body
   return accountCall(site, path, opts, "check-in")
 }

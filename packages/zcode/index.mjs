@@ -30,7 +30,7 @@ const BIGMODEL_API = "https://bigmodel.cn" // BigModel's business API, where ZCo
 const ZAI_BASE = "https://api.z.ai/api/anthropic"
 const BIGMODEL_BASE = "https://open.bigmodel.cn/api/anthropic"
 const START_BASE = ZCODE + "/api/v1/zcode-plan/anthropic"
-const APP_VERSION = "3.14.3" // the ZCode whose sign-in this makes
+const APP_VERSION = "3.15.3" // the installed ZCode whose sign-in this makes
 const UA = "ZCode/" + APP_VERSION
 
 // ZCode's models before its config is read; the Start Plan has all but GLM-5.3.
@@ -1670,7 +1670,7 @@ export async function ZCodeAuthPlugin({ client }, options) {
               h.set("Authorization", "Bearer " + key)
               const signer = signedChannel(key)
               const sessionID = randomBytes(16).toString("hex")
-              const hdr = await signer.headers(sessionID, modelOf(orig))
+              const hdr = await signer.headers(sessionID)
               for (const [k, v] of Object.entries(hdr)) h.set(k, v)
             } else if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
@@ -1698,7 +1698,7 @@ export async function ZCodeAuthPlugin({ client }, options) {
                 signedChannel(key).reset()
                 const sessionID = randomBytes(16).toString("hex")
                 try {
-                  const hdr = await signedChannel(key).headers(sessionID, modelOf(orig))
+                  const hdr = await signedChannel(key).headers(sessionID)
                   for (const [k, v] of Object.entries(hdr)) h.set(k, v)
                   res = await fetch(url, { ...opts, headers: h })
                 } catch { res = new Response(text, { status: 401, statusText: res.statusText, headers: res.headers }) }

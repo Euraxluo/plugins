@@ -1,6 +1,6 @@
-// BigModel's zhipu-client-sign channel, ported from quota-hub glmsign. It
+// BigModel's zhipu-client-sign channel, matching the ZCode 3.15.3 client. It
 // serves opt-in -Signed model entries. The derived signing key is cached only
-// in memory (and optionally in a 0600 file sealed with the API key's HKDF).
+// in memory (and optionally in a 0600 file sealed with the credential HKDF).
 import {
   createCipheriv,
   createDecipheriv,
@@ -16,9 +16,9 @@ const UPSTREAM = "https://open.bigmodel.cn"
 const HANDSHAKE_PATH = "/api/paas/c1f3a7e2/v2/client"
 const KDF_SALT = "WD_CLIENT_SIGN_KDF_SALT"
 const APP_ID = "zcode"
-const VERSION = "3.4.0"
-const UA = "ZCode/" + VERSION
-const POW_MAX = 5_000_000
+const VERSION = "3.15.3"
+const POW_NONCE_BYTES = 12 // 24 hex chars; plus an 8-hex counter = official 32-char candidate
+const POW_COUNTER_WIDTH = 8
 
 function hkdf(secret, info, length) {
   const prk = createHmac("sha256", KDF_SALT).update(secret).digest()
@@ -46,22 +46,34 @@ function gcmSeal(key, plain, aad) {
   return Buffer.concat([nonce, c.update(plain), c.final(), c.getAuthTag()])
 }
 
-export function splitAPIKey(apiKey) {
-  const id = String(apiKey ?? "")
-  const at = id.indexOf(".")
-  if (at <= 0 || at === id.length - 1) throw new Error("BigModel's sign key must be <id>.<secret>")
-  return [id.slice(0, at), id.slice(at + 1)]
-}
-
 export function minePow(keyID, sessionID, ts) {
   const challenge = createHash("sha256")
     .update(`${keyID}\n${APP_ID}\n${sessionID}\n${ts}`)
     .digest("hex")
     .slice(0, 32)
-  for (let cand = 0; cand < POW_MAX; cand++) {
-    if (createHash("sha256").update(`${challenge}\n${cand}`).digest()[0] === 0) return String(cand)
+  const prefix = randomBytes(POW_NONCE_BYTES).toString("hex")
+  for (let counter = 0; counter <= 0xffffffff; counter++) {
+    const candidate = `${prefix}${counter.toString(16).padStart(POW_COUNTER_WIDTH, "0")}`
+    const digest = createHash("sha256").update(`${challenge}\n${candidate}`).digest()
+    if (digest[0] === 0) return candidate
   }
-  return ""
+  throw new Error("Unable to solve BigModel client proof of work")
+}
+
+function parseCredential(apiKey) {
+  const parts = String(apiKey).split(".")
+  if (parts.length === 3 && parts[2]) {
+    try {
+      const header = JSON.parse(Buffer.from(parts[0].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"))
+      const claims = JSON.parse(Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"))
+      if (header?.alg === "HS256" && header?.typ === "JWT" && header?.sign_type === "SIGN" && claims?.token_use === "project_access" && claims?.api_key) {
+        return { apiKeyId: claims.api_key, credential: apiKey, secret: apiKey, handshakeField: "accessToken" }
+      }
+    } catch {}
+  }
+  const at = apiKey.indexOf(".")
+  if (at > 0 && at === apiKey.lastIndexOf(".")) return { apiKeyId: apiKey.slice(0, at), credential: apiKey, secret: apiKey.slice(at + 1), handshakeField: "apiKey" }
+  throw new Error("BigModel's sign key must be an API key or project access token")
 }
 
 function privateKeyFromDER(der) {
@@ -94,33 +106,26 @@ function writeKeyCache(path, keyID, secret, key) {
 }
 
 export function createSigner({ apiKey, cachePath = "", fetchImpl = globalThis.fetch } = {}) {
-  let keyID, secret, key, sealedDER, inflight
-  if (apiKey !== undefined) [keyID, secret] = splitAPIKey(apiKey)
+  let keyID, secret, credential, handshakeField, key, sealedDER, inflight
+  if (apiKey !== undefined) ({ apiKeyId: keyID, credential, secret, handshakeField } = parseCredential(apiKey))
   const setKey = (nextKey, sealed) => { key = nextKey; sealedDER = sealed }
   readKeyCache(cachePath, keyID, secret, setKey)
 
   async function handshake() {
     const ts = String(Date.now())
     const nonce = randomBytes(16).toString("hex")
-    const mac = createHmac("sha256", hkdf(secret, "get_sign_key_hmac", 32))
+    const mac = createHmac("sha256", hkdf(secret, "getSignKey_hmac", 32))
       .update(`get_sign_key\n${keyID}\n${ts}\n${nonce}`)
       .digest("base64")
     const res = await fetchImpl(UPSTREAM + HANDSHAKE_PATH, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${keyID}.${secret}`,
-        "user-agent": UA,
-      },
-      body: JSON.stringify({ apiKey: `${keyID}.${secret}`, ts, nonce, sig: mac }),
+      headers: { "content-type": "application/json", Authorization: credential },
+      body: JSON.stringify({ [handshakeField]: credential, ts, nonce, sig: mac }),
       signal: AbortSignal.timeout(30_000),
     })
     const env = await res.json().catch(() => ({}))
     const cipher = env?.data?.privateCipher
-    if (!res.ok || env?.code !== 200 || !cipher) {
-      throw new Error(`BigModel sign handshake: HTTP ${res.status} code ${env?.code ?? "none"}`)
-    }
+    if (!res.ok || env?.code !== 200 || !cipher) throw new Error(`BigModel sign handshake: HTTP ${res.status} code ${env?.code ?? "none"}`)
     const plain = gcmOpen(hkdf(secret, "ed25519_priv", 32), Buffer.from(cipher, "base64"), keyID)
     const der = Buffer.from(plain.toString("utf8").trim(), "base64")
     key = privateKeyFromDER(der)
@@ -131,7 +136,7 @@ export function createSigner({ apiKey, cachePath = "", fetchImpl = globalThis.fe
   async function ensure() {
     if (key) return
     if (sealedDER) {
-      key = privateKeyFromDER(gcmOpen(hkdf(secret, "local-key-cache", 32), sealedDER, keyID))
+      key = privateKeyFromDER(gcmOpen(cacheKey(secret), sealedDER, keyID))
       return
     }
     inflight ??= handshake().finally(() => { inflight = undefined })
@@ -143,29 +148,24 @@ export function createSigner({ apiKey, cachePath = "", fetchImpl = globalThis.fe
     sealedDER = undefined
   }
 
-  async function headers(sessionID, model) {
+  async function headers(sessionID) {
     await ensure()
     const ts = String(Date.now())
-    const random = randomBytes(32)
-    const nonce = random.subarray(0, 16).toString("hex")
-    const requestID = random.subarray(16).toString("hex")
+    const nonce = randomBytes(16).toString("hex")
     const payload = `${keyID}\n${ts}\n${VERSION}\n${sessionID}\n${nonce}`
-    const signature = cryptoSign(null, Buffer.from(payload), key).toString("base64")
     return {
-      "X-Session-Id": sessionID,
       "X-Client-Ts": ts,
       "X-Client-Version": VERSION,
+      "X-Client-Sig": cryptoSign(null, Buffer.from(payload), key).toString("base64"),
+      "X-Session-Id": sessionID,
       "X-Client-Nonce": nonce,
-      "X-Client-Sig": signature,
       "X-App-Id": APP_ID,
       "X-Client-Pow": minePow(keyID, sessionID, ts),
-      "X-Product": APP_ID,
-      "User-Agent": UA,
-      "X-Client-Type": "pc",
-      "X-Request-Id": requestID,
-      "X-Request-Model": model,
     }
   }
 
-  return { headers, reset, ensure, bind(nextKey) { [keyID, secret] = splitAPIKey(nextKey); reset() } }
+  return { headers, reset, ensure, bind(nextKey) {
+    ({ apiKeyId: keyID, credential, secret, handshakeField } = parseCredential(nextKey))
+    reset()
+  } }
 }

@@ -9,12 +9,13 @@
 | `autoclaw` | Google / z.ai 网页 OAuth | `autoglm-api.autoglm.ai` | `autoclaw/zai_auto` 等 |
 | `autoclaw-cn` | 手机验证码（+86） | `autoglm-api.zhipuai.cn` | `autoclaw-cn/zai_auto` 等 |
 
-两个供应商都支持 magpie 的多账号、故障切换、token 自动轮换与积分余额显示。模型为带前缀的 routeModelId（`zai_` 智谱 / `zaicoding_` coding plan / `tdpsk_` 豆包 DeepSeek）：
+两个供应商都支持 magpie 的多账号、故障切换、token 自动轮换与积分余额显示。实测可用的 4 个在线模型为带前缀的 routeModelId（`zai_` 智谱 / `zaicoding_` coding plan）：
 
-- `zai_auto` / `zai_auto-fast`（自动路由，推荐默认）
-- `zai_glm-5.3-flash` / `zai_glm-5-turbo`
-- `zaicoding_glm-5.3`
-- `tdpsk_deepseek-v4-flash-202605` / `tdpsk_deepseek-v4-pro-202606`
+- `zai_auto` / `zai_auto-fast`（自动路由，支持 reasoning variants：low / high / max）
+- `zai_glm-5.3-flash`（极速推理，支持 reasoning variants）
+- `zaicoding_glm-5.3`（GLM-5.3 编程专项，支持 reasoning variants）
+
+> 注：旧版中的 `zai_glm-5-turbo` 以及豆包 DeepSeek 映射 `tdpsk_deepseek-v4-flash-202605`、`tdpsk_deepseek-v4-pro-202606` 已被上游下线（调用均返回 `400 非法模型`），本版本已从模型列表中移除。
 
 ## 安装
 
@@ -71,6 +72,16 @@ EOF
 | `signin` | `true` | 旧链路自动补签总开关（不影响原生 checkin） |
 | `signinOnUsage` | `false` | 查额度/刷新时自动补签（默认关，交给原生开关） |
 | `signinHour` | `null` | 限定补签小时：`8` = 仅当本地时间处于 8:00–8:59 时补签；`null` 不限 |
+
+## 对话网关与请求整形
+
+AutoClaw 对话网关对请求形状有硬性要求，缺任一条都回 `406 Not Acceptable` 且 body 为空：
+- **官方 system 前缀**：必须以 `You are AutoClaw. Answer the user directly and concisely.` 开头（插件会自动合并进 caller 已有的 system 消息，无 system 时补一条最小 system）
+- **删除 max_tokens**：网关拒收 `max_tokens` / `max_completion_tokens`，插件会在发送前自动剔除
+- **不发送 X-Harness-Type**：上游收到 `X-Harness-Type` 即报 406，已删除该残留请求头
+- **改写外部 Harness 身份声明**：上游拦截 system 中包含的外部 agent 身份句（如 `You are Codex`、`You are Claude Code` 等），插件的 `unflag` 会自动将其替换为兼容措辞，避免 406 拦截
+
+国内版 `autoclaw-cn` 走 AutoClaw 2.1.0 managed gateway（`autoglm-acceleration-api.zhipuai.cn`）；国际版 `autoclaw` 走海外直连网关（`autoglm-api.autoglm.ai`）。两者均已通过真实调用与推理验证。
 
 ## 已知行为
 

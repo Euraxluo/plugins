@@ -166,9 +166,17 @@ resets (magpie #1904).
 
 ## Not here
 
-magpie's built-in WorkBuddy does more than this package:
-- the daily check-in;
-- the credits meter (`/billing/meter/get-user-resource-summary`);
-- several accounts under one provider.
+magpie's built-in WorkBuddy does more than this package: several accounts
+under one provider.
 
 OpenCode's plugin API has no place for these.
+
+## Daily check-in
+
+The account's daily credits are claimed through the billing meter. magpie
+can run it once a day per account when its WorkBuddy check-in switch is on;
+Settings → Usage → Plugins has that switch and a *Check in now* button.
+WorkBuddy AI tries the meter without `/v2` first and falls back to `/v2`;
+WorkBuddy (China) uses `/v2`. A reply saying the day was already claimed is
+`done`, and a transient billing failure is retried twice before the card
+shows the failure. Enterprise accounts have no daily check-in.

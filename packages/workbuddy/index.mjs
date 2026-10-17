@@ -1202,13 +1202,47 @@ async function meter(site, a, path, body = {}) {
     env = JSON.parse(await res.text()) ?? {}
   } catch {}
   const code = Number.parseInt(env.code, 10) || 0
+  const err = (message) => Object.assign(new Error(message), { status: res.status, code })
   if (!res.ok) {
-    if (code) throw new Error(env.msg || `error ${code}`)
-    if (env.msg) throw new Error(env.msg)
-    throw new Error(statusText(res.status))
+    if (code) throw err(env.msg || `error ${code}`)
+    if (env.msg) throw err(env.msg)
+    throw err(statusText(res.status))
   }
-  if (code) throw new Error(env.msg || `error ${code}`)
+  if (code) throw err(env.msg || `error ${code}`)
   return env.data ?? null
+}
+
+// alreadyCheckin is WorkBuddy's idempotent refusal of a day already claimed:
+// a business-code reply whose words say so, never a network or parse error.
+function alreadyCheckin(e) {
+  return typeof e?.status === "number" && /已签到|already/i.test(String(e?.message ?? ""))
+}
+
+// checkinOf claims the account's daily credits. China has the /v2 meter;
+// WorkBuddy AI first asks without it and falls back on 404, as its own
+// client does. Transient upstream failures are asked again twice (the same
+// bounded retry quota-hub observed on the billing endpoint; callers may
+// shorten the waits for a test).
+async function checkinOf(site, a, { waits = [0, 0] } = {}) {
+  const paths = site.ai ? ["/billing/meter/daily-checkin", "/v2/billing/meter/daily-checkin"] : ["/v2/billing/meter/daily-checkin"]
+  for (let attempt = 0; ; attempt++) {
+    let i = 0
+    while (i < paths.length) {
+      try {
+        await meter(site, a, paths[i++])
+        return { outcome: "claimed" }
+      } catch (e) {
+        if (e?.status === 404 && i < paths.length) continue
+        if (alreadyCheckin(e)) return { outcome: "done" }
+        const transient = e?.status >= 500 || e?.code === 10000
+        if (transient && attempt < waits.length) {
+          await new Promise((r) => setTimeout(r, waits[attempt]))
+          break
+        }
+        throw e
+      }
+    }
+  }
 }
 
 // capacity is a capacity the billing API sends, as a string ("438.88")
@@ -1582,6 +1616,19 @@ function makePlugin(site) {
       // and is renewed as before.
       refreshLead: LEAD_MS,
       refresh: (auth) => refreshed(site, auth),
+      // the account's daily check-in: magpie can run it once a day per
+      // account, when its WorkBuddy check-in switch is on; the button in
+      // Settings asks right away. Enterprise accounts aren't given one.
+      async checkin(getAuth) {
+        const auth = await getAuth()
+        if (auth?.type !== "oauth" || !(auth.access || auth.source)) return { outcome: "failed", message: "not signed in" }
+        try {
+          const a = await current(site, client, auth)
+          return await checkinOf(site, a, { waits: [2000, 4000] })
+        } catch (e) {
+          return { outcome: "failed", message: e?.message ?? String(e) }
+        }
+      },
       async loader(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "oauth") return {}
@@ -1762,4 +1809,4 @@ export const WorkBuddyAuthPlugin = makePlugin(SITES.workbuddy)
 export const WorkBuddyAIAuthPlugin = makePlugin(SITES["workbuddy-ai"])
 
 // for tests
-export const _internal = { EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf }
+export const _internal = { EDGE_READS, fitShape, replyAfterTools, AFTER_TOOLS_REFUSED, enterpriseUsageOf, notDesktop, textOnly, runsOutOf, packagesOf, endOf, enterpriseHeaders, enterpriseOf, liveModels, browserSignIn, withSystem, normalizeToolChoice, fitTools, fitted, renamed, unflagged, usageOf, desktopHeld, explained, REFUSED_HINT, RESTRICTED_HINT, EXHAUSTED_HINT, freeCredits, creditsOf, priceOf, fresh, SITES, renewing, renewed, SESSION, attend, turnKey, conversationKey, signatureOf, checkinOf }

@@ -130,3 +130,32 @@ test("a token near its end is renewed before the claim", async () => {
   expect(calls[1].headers.get("authorization")).toBe("Bearer new")
   expect(sets).toHaveLength(1)
 })
+
+test("a day already in reports today's credit, the built-in's word for it", async () => {
+  serve({ "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, today_checked_in: true, today_credit: 30, daily_credit: 100 }) })
+  const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
+  expect(await checkinOf(WorkBuddyAuthPlugin, auth)).toEqual({ outcome: "done", credit: 30 })
+})
+
+test("the claim's credit, streak and message reach the card", async () => {
+  serve({
+    "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, todayCheckedIn: false }),
+    "/v2/billing/meter/daily-checkin": () => ok({ credit: 30, streak_days: 3, message: "签到成功，连续签到3天" }),
+  })
+  const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
+  expect(await checkinOf(WorkBuddyAuthPlugin, auth)).toEqual({ outcome: "claimed", credit: 30, streak: 3, message: "签到成功，连续签到3天" })
+})
+
+test("an unclassified failure leaves the hook as a throw, not a failed answer", async () => {
+  // magpie's wbCheckinFailed runs on a thrown error and keeps the offline
+  // words for its 1-minute backoff; a returned failed waits 30 minutes
+  globalThis.fetch = async () => { throw new Error("ECONNRESET: The socket connection was closed unexpectedly.") }
+  const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
+  expect(checkinOf(WorkBuddyAuthPlugin, auth)).rejects.toThrow("ECONNRESET")
+})
+
+test("WorkBuddy AI's plugin has no check-in", async () => {
+  // the meter is China's; the AI build has no claim endpoint (#47)
+  const hooks = await WorkBuddyAIAuthPlugin({ client: {} })
+  expect(hooks.auth.checkin).toBeUndefined()
+})

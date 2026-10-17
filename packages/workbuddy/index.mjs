@@ -1229,11 +1229,16 @@ async function checkinOf(site, a, { waits = [0, 0] } = {}) {
     status = await meter(site, a, "/v2/billing/meter/checkin-activity-status")
   } catch (e) {
     if (e?.code === 1001) return { outcome: "done" }
+    // a reply WorkBuddy sent is the day's failed answer; only a request
+    // that got no answer leaves as a throw, for magpie's offline backoff
+    if (e?.status !== undefined || e?.code !== undefined) return { outcome: "failed", message: e.message }
     throw e
   }
   if (!status?.active) return { outcome: "inactive" }
   if (status.today_checked_in ?? status.todayCheckedIn) {
-    const credit = Number(status.daily_credit ?? status.today_credit)
+    // today_credit is what today actually gave, the built-in's word for a
+    // day already in; daily_credit is the day's grant
+    const credit = Number(status.today_credit ?? status.daily_credit)
     return { outcome: "done", ...(Number.isFinite(credit) && credit > 0 ? { credit } : {}) }
   }
   const paths = ["/v2/billing/meter/daily-checkin"]
@@ -1241,8 +1246,17 @@ async function checkinOf(site, a, { waits = [0, 0] } = {}) {
     let i = 0
     while (i < paths.length) {
       try {
-        await meter(site, a, paths[i++])
-        return { outcome: "claimed" }
+        const got = await meter(site, a, paths[i++])
+        // the claim's own answer, as the built-in hands it on: the credit
+        // and streak it granted and what it said, for the card
+        const credit = Number(got?.credit)
+        const streak = Number(got?.streak_days)
+        return {
+          outcome: "claimed",
+          ...(Number.isFinite(credit) && credit > 0 ? { credit } : {}),
+          ...(Number.isFinite(streak) && streak > 0 ? { streak } : {}),
+          ...(got?.message ? { message: String(got.message) } : {}),
+        }
       } catch (e) {
         if (e?.code === 1001) return { outcome: "done" }
         if (e?.code === 1002) return { outcome: "ineligible", message: e.message }
@@ -1261,6 +1275,9 @@ async function checkinOf(site, a, { waits = [0, 0] } = {}) {
           await new Promise((r) => setTimeout(r, waits[attempt]))
           break
         }
+        // a reply WorkBuddy sent is the day's failed answer; only a request
+        // that got no answer leaves as a throw, for magpie's offline backoff
+        if (e?.status !== undefined || e?.code !== undefined) return { outcome: "failed", message: e.message }
         throw e
       }
     }
@@ -1640,17 +1657,21 @@ function makePlugin(site) {
       refresh: (auth) => refreshed(site, auth),
       // the account's daily check-in: magpie can run it once a day per
       // account, when its WorkBuddy check-in switch is on; the button in
-      // Settings asks right away.
-      async checkin(getAuth) {
-        const auth = await getAuth()
-        if (auth?.type !== "oauth" || !(auth.access || auth.source)) return { outcome: "failed", message: "not signed in" }
-        try {
+      // Settings asks right away. China's meter only: the AI build has no
+      // check-in (#47), so the hook stays off its plugin. Errors leave as
+      // throws, not as failed answers: host.js answers a throwing hook to
+      // magpie as an error, whose wbCheckinFailed keeps the offline words
+      // and magpie's 1-minute backoff, where a returned failed waits the
+      // full 30 minutes (magpie-community/plugins#149). checkinOf returns
+      // an outcome only for answers it read and classified.
+      ...(site.ai ? {} : {
+        async checkin(getAuth) {
+          const auth = await getAuth()
+          if (auth?.type !== "oauth" || !(auth.access || auth.source)) return { outcome: "failed", message: "not signed in" }
           const a = await current(site, client, auth)
           return await checkinOf(site, a, { waits: [2000, 4000] })
-        } catch (e) {
-          return { outcome: "failed", message: e?.message ?? String(e) }
-        }
-      },
+        },
+      }),
       async loader(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "oauth") return {}

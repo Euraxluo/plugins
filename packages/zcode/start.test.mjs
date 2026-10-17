@@ -6,23 +6,34 @@
 // Plan or team request goes as the agent sent it. The requests go to a
 // local Bun.serve that records them; nothing reaches z.ai or bigmodel.
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
-import { createHash } from "node:crypto"
+import { createCipheriv, createHash, createHmac } from "node:crypto"
 import { arch, homedir, release, tmpdir } from "node:os"
 import { basename } from "node:path"
 import { realpathSync } from "node:fs"
 
-let ZCodeAuthPlugin, PROMPT
+let ZCodeAuthPlugin, _internal, PROMPT
 let server
 const got = []
 let answer = null // what the fake answers instead, when set
 beforeAll(async () => {
   if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run with HOME=$(mktemp -d) bun test")
-  ;({ ZCodeAuthPlugin } = await import("./index.mjs"))
+  ;({ ZCodeAuthPlugin, _internal } = await import("./index.mjs"))
   PROMPT = (await import("./prompt.mjs")).default
   server = Bun.serve({
     port: 0,
     async fetch(req) {
       got.push({ method: req.method, path: new URL(req.url).pathname, headers: Object.fromEntries(req.headers), body: await req.text() })
+      if (new URL(req.url).pathname === "/open.bigmodel.cn/api/paas/c1f3a7e2/v2/client") {
+        const secret = "secret"
+        const prk = createHmac("sha256", "WD_CLIENT_SIGN_KDF_SALT").update(secret).digest()
+        const key = createHmac("sha256", prk).update(Buffer.concat([Buffer.from("ed25519_priv"), Buffer.from([1])])).digest().subarray(0, 32)
+        const nonce = Buffer.alloc(12)
+        const cipher = createCipheriv("aes-256-gcm", key, nonce)
+        cipher.setAAD(Buffer.from("two"))
+        const der = Buffer.from("MC4CAQAwBQYDK2VwBCIEINaofm94EHDBFTX6XkGlMUU8F41qb2mXKe/DMwUJbxCh", "base64")
+        const sealed = Buffer.concat([nonce, cipher.update(Buffer.from(der.toString("base64"))), cipher.final(), cipher.getAuthTag()]).toString("base64")
+        return Response.json({ code: 200, data: { privateCipher: sealed } })
+      }
       if (answer) return answer()
       return Response.json({ type: "message", content: [] })
     },
@@ -45,6 +56,7 @@ afterEach(() => {
   globalThis.fetch = real
   got.length = 0
   answer = null
+  _internal.signedSigners.clear()
 })
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 16)
@@ -69,7 +81,6 @@ async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messa
     ? await opts.fetch(new Request(url, { method: "POST", headers, body }))
     : await opts.fetch(url, { method: "POST", headers, body })
   expect(res.status).toBe(200)
-  expect(got.length).toBe(1)
   return got[0]
 }
 
@@ -306,10 +317,13 @@ test("a GLM Coding Plan key's request goes as the agent sent it", async () => {
   sentAsIs(await send({ type: "api", key: "one.secret", metadata: { site: "zai" } }, agentText), "one.secret", "/api.z.ai/api/anthropic/v1/messages")
   got.length = 0
   const r = await send({ type: "api", key: "two.secret", metadata: { site: "bigmodel" } }, agentText, { url: "https://open.bigmodel.cn/api/anthropic/v1/messages" })
-  expect(r.path).toBe("/open.bigmodel.cn/api/anthropic/v1/messages")
-  expect(r.body).toBe(agentText)
-  expect(r.headers.authorization).toBe("Bearer two.secret")
-  expect(r.headers["x-api-key"]).toBe("two.secret")
+  expect(got).toHaveLength(2) // the signed coding request, then the model request
+  expect(got[0].path).toBe("/open.bigmodel.cn/api/paas/c1f3a7e2/v2/client")
+  expect(got[1]).toMatchObject({ path: "/open.bigmodel.cn/api/anthropic/v1/messages", body: agentText })
+  expect(got[1].headers.authorization).toBe("Bearer two.secret")
+  expect(got[1].headers["x-api-key"]).toBe("two.secret")
+  expect(got[1].headers["x-client-sig"]).toBeTruthy()
+  expect(got[1].headers["x-client-pow"]).toBeTruthy()
 })
 
 test("a team seat's request goes as the agent sent it, ZCode's token or not", async () => {

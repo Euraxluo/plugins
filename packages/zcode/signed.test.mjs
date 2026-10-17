@@ -12,7 +12,6 @@ const state = { site: "bigmodel", base: "https://open.bigmodel.cn/api/anthropic"
 const auth = { type: "oauth", access: KEY, refresh: JSON.stringify(state), expires: 0 }
 const sent = []
 const real = globalThis.fetch
-const realSignedFetch = async (input, init) => real(input, init)
 const DER = Buffer.from("MC4CAQAwBQYDK2VwBCIEINaofm94EHDBFTX6XkGlMUU8F41qb2mXKe/DMwUJbxCh", "base64")
 
 function sealedKey() {
@@ -28,11 +27,11 @@ function sealedKey() {
 beforeEach(() => {
   sent.length = 0
   _internal.signedSigners.clear()
-  _internal.signedFetchRef.impl = async () => new Response(JSON.stringify({
-    code: 200,
-    data: { privateCipher: sealedKey() },
-  }), { headers: { "content-type": "application/json" } })
   globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/paas/c1f3a7e2/v2/client") {
+      return new Response(JSON.stringify({ code: 200, data: { privateCipher: sealedKey() } }), { headers: { "content-type": "application/json" } })
+    }
     sent.push({ input: String(input), init, headers: new Headers(init?.headers) })
     return new Response(JSON.stringify({ ok: true }))
   }
@@ -40,7 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = real
-  _internal.signedFetchRef.impl = realSignedFetch
+  _internal.signedSigners.clear()
 })
 
 async function send(model) {
@@ -70,5 +69,19 @@ test("a BigModel coding request is signed without changing its model", async () 
   expect(sent[0].headers.get("x-client-version")).toBe("3.4.0")
   expect(sent[0].headers.get("x-client-sig")).toBeTruthy()
   expect(sent[0].headers.get("x-client-pow")).toBeTruthy()
+  _internal.plansOf = realPlansOf
+})
+
+test("a failed BigModel sign handshake never sends an unsigned coding request", async () => {
+  const realPlansOf = _internal.plansOf
+  _internal.plansOf = async () => ({ start: false, gift: null })
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.pathname === "/api/paas/c1f3a7e2/v2/client") return new Response(JSON.stringify({ code: 403 }), { status: 403 })
+    sent.push({ input: String(input), init, headers: new Headers(init?.headers) })
+    return new Response(JSON.stringify({ ok: true }))
+  }
+  await expect(send("GLM-5.3")).rejects.toThrow("BigModel sign handshake")
+  expect(sent).toHaveLength(0)
   _internal.plansOf = realPlansOf
 })

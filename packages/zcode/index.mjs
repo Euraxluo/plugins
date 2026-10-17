@@ -236,11 +236,10 @@ async function plansOf(s) {
 const blocked = new Map()
 
 const signedSigners = new Map()
-const signedFetchRef = { impl: async () => { throw new Error("BigModel sign handshake failed") } }
 const signedChannel = (key) => {
   let s = signedSigners.get(key)
   if (!s) {
-    s = createSigner({ apiKey: key, fetchImpl: (...args) => signedFetchRef.impl(...args) })
+    s = createSigner({ apiKey: key })
     signedSigners.set(key, s)
   }
   return s
@@ -1645,7 +1644,6 @@ export async function ZCodeAuthPlugin({ client }) {
             let h = new Headers(opts.headers)
             const place = workPlace(h)
             const signed = !start && siteOf(s.site) === "bigmodel"
-            let signedHeadersApplied = false
             if (signed) {
               if (!key) throw new Error("ZCode's sign-in has no key; sign in again")
               swap(BIGMODEL_BASE)
@@ -1654,15 +1652,8 @@ export async function ZCodeAuthPlugin({ client }) {
               h.set("Authorization", "Bearer " + key)
               const signer = signedChannel(key)
               const sessionID = randomBytes(16).toString("hex")
-              let hdr
-              try {
-                hdr = await signer.headers(sessionID, modelOf(orig))
-              } catch {
-                // Signing is optional: a failed handshake falls back to ZCode's normal key channel.
-                hdr = null
-              }
-              if (hdr) for (const [k, v] of Object.entries(hdr)) h.set(k, v)
-              signedHeadersApplied = !!hdr
+              const hdr = await signer.headers(sessionID, modelOf(orig))
+              for (const [k, v] of Object.entries(hdr)) h.set(k, v)
             } else if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
               if (!s.jwt) throw new Error("ZCode's sign-in has no key; sign in again")
@@ -1683,14 +1674,14 @@ export async function ZCodeAuthPlugin({ client }) {
               h.set("Authorization", "Bearer " + key)
             }
             let res = await fetch(url, { ...opts, headers: h })
-            if (signed && signedHeadersApplied && res.status === 401) {
+            if (signed && res.status === 401) {
               const text = await res.text()
               if (text.includes("VERIFY_SIGNATURE_INVALID") || text.includes("VERIFY_APIKEY_EXPIRED")) {
                 signedChannel(key).reset()
                 const sessionID = randomBytes(16).toString("hex")
                 try {
                   const hdr = await signedChannel(key).headers(sessionID, modelOf(orig))
-                  if (hdr) for (const [k, v] of Object.entries(hdr)) h.set(k, v)
+                  for (const [k, v] of Object.entries(hdr)) h.set(k, v)
                   res = await fetch(url, { ...opts, headers: h })
                 } catch { res = new Response(text, { status: 401, statusText: res.statusText, headers: res.headers }) }
               } else res = new Response(text, { status: 401, statusText: res.statusText, headers: res.headers })
@@ -1798,4 +1789,4 @@ export async function ZCodeAuthPlugin({ client }) {
 }
 
 // for tests
-export const _internal = { entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT, signedSigners, signedFetchRef }
+export const _internal = { entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT, signedSigners }

@@ -1,6 +1,6 @@
 // BigModel's zhipu-client-sign channel, ported from quota-hub glmsign.
-// The channel is opt-in through a -Signed model entry and keeps no
-// credentials outside the in-memory signer bound to the current auth key.
+// The BigModel Coding Plan uses it for every normal model request and keeps
+// no credentials outside the in-memory signer bound to the current auth key.
 import {
   createCipheriv,
   createDecipheriv,

@@ -45,8 +45,6 @@ const FALLBACK_EXPIRES_IN_S = 5 * 3600;
 const OAUTH_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** 模型清单：键 = magpie 里显示的 id；值里的 id = 上游接受的 routeModelId。 */
-const MANAGED_MODELS = new Set(["zai_auto", "zai_auto-fast", "zai_glm-5.3-flash", "zaicoding_glm-5.3"]);
-
 function autoclawModels() {
   return {
     "zai_auto": { name: "GLM Auto (路由)", id: "zai_auto", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
@@ -416,7 +414,7 @@ async function aggregateSSE(response, model) {
 
 function rewriteManagedBody(body) {
   const payload = JSON.parse(String(body ?? "{}"));
-  const model = MANAGED_MODELS.has(payload.model) ? payload.model : "zai_auto";
+  const model = typeof payload.model === "string" ? payload.model : "zai_auto";
   const messages = Array.isArray(payload.messages) ? payload.messages : [];
   payload.model = model;
   payload.stream = true;

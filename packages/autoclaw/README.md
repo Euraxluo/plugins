@@ -81,7 +81,7 @@ EOF
 - 强制上游 `stream: true`，删除 `max_tokens` / `stream_options`
 - 调用方要求非流式时，将上游 SSE 聚合为 OpenAI chat completion
 - 完整 managed 请求头：MD5 身份签名、`X-Agent-Id`、trace/request/model/client 头和 `X-Authorization`
-- 模型收敛为 `zai_auto`、`zai_auto-fast`、`zai_glm-5.3-flash`、`zaicoding_glm-5.3`；未知模型回退 `zai_auto`
+- 模型 ID 保持调用方选择的值原样发送；所有官方目录模型均可使用
 
 国际版暂不套用国内 managed gateway：当前验证只覆盖国内版，国际版保持原路径。
 

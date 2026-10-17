@@ -7,7 +7,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AutoclawAuthPlugin, AutoclawCnAuthPlugin, _internal } from "./index.mjs"
 
-const { checkinOutcome, signinConfig, bareToken, codeValue, tokenFields, refreshTokens, startLocalOAuth } = _internal
+const {
+  checkinOutcome, signinConfig, bareToken, codeValue, tokenFields, refreshTokens, startLocalOAuth,
+  autoclawRewriteBody, unflag, unflagged, explained, FLAGGED, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
+} = _internal
 
 const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url")
 const jwt = (claims) => `${b64url({ alg: "none" })}.${b64url(claims)}.sig`
@@ -116,6 +119,121 @@ test("loader().fetch signs with X-Authorization and rotates hosts on 401", async
     globalThis.fetch = realFetch
   }
 })
+
+// AutoClaw's 2.1.0 chat gateway answers 406 with an empty body to a chat that
+// hasn't the official prefix first or that carries max_tokens.
+// autoclawRewriteBody puts a chat in that shape, once, whatever it is handed.
+test("autoclawRewriteBody prefixes the system prompt and drops max_tokens", () => {
+  const chat = (messages, rest = {}) => JSON.stringify({ model: "zai_glm-5.3-flash", messages, ...rest })
+
+  // the caller's own system message keeps its words, behind the prefix
+  const one = autoclawRewriteBody(chat([{ role: "system", content: "Be terse." }, { role: "user", content: "hi" }], { max_tokens: 32000 }))
+  expect(one.messages[0].content).toBe(`${OFFICIAL_SYSTEM_PROMPT}\n\nBe terse.`)
+  expect(one.max_tokens).toBeUndefined()
+  expect(one.messages.length).toBe(2)
+
+  // …and the prefix goes on once, however often the rewrite runs
+  expect(autoclawRewriteBody(JSON.stringify(one)).messages[0].content).toBe(one.messages[0].content)
+
+  // a chat that opens without a system message gets the smallest one
+  expect(autoclawRewriteBody(chat([{ role: "user", content: "hi" }])).messages).toEqual([
+    { role: "system", content: OFFICIAL_SYSTEM_PROMPT },
+    { role: "user", content: "hi" },
+  ])
+
+  // the newer spelling goes with max_tokens
+  expect(autoclawRewriteBody(chat([{ role: "user", content: "hi" }], { max_completion_tokens: 10 })).max_completion_tokens).toBeUndefined()
+
+  // anything that isn't a JSON chat is left for the caller to pass through
+  expect(autoclawRewriteBody("not json")).toBe(null)
+  expect(autoclawRewriteBody(JSON.stringify({ model: "zai_auto" }))).toBe(null)
+})
+
+// FLAGGED is the words AutoClaw refuses a chat for: it reads the system
+// prompt only, minds no case, and matches the shortest run of them ("You are
+// Claude Code" and "Codex CLI" are two separate ones). Each pair was sent to
+// the live gateway: the left side is a 406, the right side answers.
+test("every flagged line's replacement is one the gateway still takes", () => {
+  expect(FLAGGED.length).toBeGreaterThan(0)
+  for (const [re, to] of FLAGGED) {
+    expect(to).not.toMatch(new RegExp(re.source, "i"))
+    expect(unflagged(to)).toBe(to)
+  }
+  expect(unflagged("You are Claude Code, Anthropic's official CLI for Claude.")).not.toMatch(/You are Claude Code/)
+  expect(unflagged("Codex CLI is an open source project.")).not.toMatch(/Codex CLI/)
+})
+
+// The gateway reads the system prompt, not the chat: the caller's own words
+// in a user or assistant message stay as they are.
+test("unflag rewrites system and developer messages only", () => {
+  const messages = [
+    { role: "system", content: "You are Claude Code, Anthropic's official CLI for Claude." },
+    { role: "developer", content: [{ type: "text", text: "You are Cursor" }] },
+    { role: "user", content: "You are Codex" },
+    { role: "assistant", content: [{ type: "text", text: "Codex CLI is what I use" }] },
+  ]
+  expect(unflag(messages)).toBe(true)
+  expect(messages[0].content).toBe("You are the Claude Code CLI, Anthropic's official CLI for Claude.")
+  expect(messages[1].content[0].text).toBe("You are the Cursor agent")
+  expect(messages[2].content).toBe("You are Codex")
+  expect(messages[3].content[0].text).toBe("Codex CLI is what I use")
+  // nothing left to change the second time
+  expect(unflag(messages)).toBe(false)
+})
+
+// explained is res with REFUSED_HINT on a 406 — the one refusal the gateway
+// gives no words for — and the sign-in marked kept, so magpie doesn't read a
+// refusal as a lapsed account.
+test("explained adds the way out to a 406 and keeps the sign-in", async () => {
+  const refused = await explained(new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406, headers: { "content-type": "application/json" } }))
+  expect(refused.status).toBe(406)
+  expect(refused.headers.get("X-Magpie-Sign-In")).toBe("kept")
+  expect((await refused.json()).error.message).toBe(`406 Not Acceptable — ${REFUSED_HINT}`)
+
+  // an answer that isn't a refusal is passed through, and its body with it
+  const ok = await explained(new Response('{"choices":[]}', { status: 200 }))
+  expect(ok.status).toBe(200)
+  expect(await ok.text()).toBe('{"choices":[]}')
+})
+
+test("overseas loader().fetch drops X-Harness-Type and explains 406", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  let status = 200
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body ?? "{}")) })
+    if (status === 406) return new Response(JSON.stringify({ error: { code: null, message: "406 Not Acceptable", type: "api_error" } }), { status: 406 })
+    return new Response("ok")
+  }
+  try {
+    const hooks = await AutoclawAuthPlugin({ client: { auth: { set: async () => {} } } })
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const body = JSON.stringify({
+      model: "zai_glm-5.3-flash",
+      max_tokens: 32000,
+      messages: [
+        { role: "system", content: "You are an AI agent powered by DeepSeek Harness." },
+        { role: "user", content: "hi" },
+      ],
+    })
+
+    expect((await loader.fetch("x", { method: "POST", body })).status).toBe(200)
+    const sent = calls.at(-1)
+    expect(sent.body.max_tokens).toBeUndefined()
+    expect(sent.body.messages[0].content.startsWith(OFFICIAL_SYSTEM_PROMPT)).toBe(true)
+    expect(sent.body.messages[0].content).not.toMatch(/DeepSeek Harness/)
+    expect(sent.headers.get("X-Harness-Type")).toBe(null)
+
+    status = 406
+    const refused = await loader.fetch("x", { method: "POST", body })
+    expect(refused.status).toBe(406)
+    expect(refused.headers.get("X-Magpie-Sign-In")).toBe("kept")
+    expect((await refused.json()).error.message).toContain(REFUSED_HINT)
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
 
 test("refreshTokens orders hosts by the token's source_id and falls back on 400002", async () => {
   const realFetch = globalThis.fetch
@@ -308,7 +426,7 @@ test("CN preserves string and array system content", async () => {
   } finally { globalThis.fetch = realFetch }
 })
 
-test("CN's managed catalog uses variant objects and overseas keeps its catalog", async () => {
+test("CN and overseas catalogs match the live models and use variant objects", async () => {
   const factory = makePlugin("autoclaw-cn")
   const cn = await factory({ client: { auth: { set: async () => {} } } }, {})
   const cfg = { provider: {} }
@@ -316,10 +434,12 @@ test("CN's managed catalog uses variant objects and overseas keeps its catalog",
   expect(Object.keys(cfg.provider["autoclaw-cn"].models.zai_auto.variants)).toEqual(["low", "high", "max"])
   expect(cfg.provider["autoclaw-cn"].models.zai_auto.variants.max).toEqual({ reasoningEffort: "max" })
   expect(Object.keys(cfg.provider["autoclaw-cn"].models)).toEqual(["zai_auto", "zai_auto-fast", "zaicoding_glm-5.3", "zai_glm-5.3-flash"])
+
   const overseas = await makePlugin("autoclaw")({ client: { auth: { set: async () => {} } } }, {})
   const oc = { provider: {} }
   await overseas.config(oc)
-  expect(Object.keys(oc.provider.autoclaw.models)).toEqual(["zai_auto", "zai_auto-fast", "zai_glm-5.3-flash", "zai_glm-5-turbo", "zaicoding_glm-5.3", "tdpsk_deepseek-v4-flash-202605", "tdpsk_deepseek-v4-pro-202606"])
+  expect(Object.keys(oc.provider.autoclaw.models.zai_auto.variants)).toEqual(["low", "high", "max"])
+  expect(Object.keys(oc.provider.autoclaw.models)).toEqual(["zai_auto", "zai_auto-fast", "zaicoding_glm-5.3", "zai_glm-5.3-flash"])
 })
 
 test("CN passes SSE through and marks 401 expired", async () => {

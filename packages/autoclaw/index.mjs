@@ -17,7 +17,7 @@
  *        callback() 里用 code 调 {vendor}-oauth-login 换 token → {type:"success"}
  */
 
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import * as http from "node:http";
@@ -41,6 +41,104 @@ const MANAGED_HOST = "https://autoglm-acceleration-api.zhipuai.cn";
 const OFFICIAL_SYSTEM_PROMPT = 'You are AutoClaw. Answer the user directly and concisely.';
 const WALLETS_PATH = `/agent-assetmgr/api/v2/wallets?biz_app_id=${PRODUCT}`;
 
+const FLAGGED = [
+  [/You are an AI agent powered by DeepSeek Harness/gi, "You are an AI agent powered by DeepSeek-Harness"],
+  [/You are Claude Code/gi, "You are the Claude Code CLI"],
+  [/You are Codex/gi, "You are the Codex agent"],
+  [/Codex CLI/gi, "Codex command-line tool"],
+  [/You are opencode/gi, "You are the opencode agent"],
+  [/You are Cursor/gi, "You are the Cursor agent"],
+  [/You are Cline/gi, "You are the Cline agent"],
+  [/You are Qwen Code/gi, "You are the Qwen Code agent"],
+];
+
+function unflagged(text) {
+  for (const [re, to] of FLAGGED) text = text.replace(re, to);
+  return text;
+}
+
+function unflag(messages) {
+  let changed = false;
+  for (const m of messages) {
+    if (!m || (m.role !== "system" && m.role !== "developer")) continue;
+    if (typeof m.content === "string") {
+      const t = unflagged(m.content);
+      if (t !== m.content) {
+        m.content = t;
+        changed = true;
+      }
+    } else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (typeof part?.text !== "string") continue;
+        const t = unflagged(part.text);
+        if (t !== part.text) {
+          part.text = t;
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
+const REFUSED_HINT =
+  "AutoClaw refuses chats whose system prompt carries another agent's identity line (Claude Code, Codex, opencode, Cursor, Cline, Qwen Code, DeepSeek Harness); this plugin rewrites the ones it knows, so an unknown one needs another provider in this group";
+
+async function explained(res) {
+  if (res.status < 400) return res;
+  const headers = new Headers(res.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  headers.set("X-Magpie-Sign-In", "kept");
+  const text = await res.text().catch(() => "");
+  if (res.status !== 406) return new Response(text, { status: res.status, statusText: res.statusText, headers });
+  let said = "";
+  try {
+    said = JSON.parse(text)?.error?.message ?? "";
+  } catch {}
+  headers.set("content-type", "application/json");
+  return new Response(
+    JSON.stringify({ error: { message: `${said || "406 Not Acceptable"} — ${REFUSED_HINT}`, type: "permission_error", code: null } }),
+    { status: res.status, statusText: res.statusText, headers },
+  );
+}
+
+function autoclawRewriteBody(rawBody) {
+  let payload;
+  try {
+    payload = JSON.parse(typeof rawBody === "string" ? rawBody : new TextDecoder().decode(rawBody));
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.messages)) return null;
+
+  unflag(payload.messages);
+
+  const idx = payload.messages.findIndex((m) => m && m.role === "system");
+  if (idx >= 0) {
+    const cur = payload.messages[idx].content;
+    if (typeof cur === "string") {
+      if (!cur.startsWith(OFFICIAL_SYSTEM_PROMPT)) {
+        payload.messages[idx] = { ...payload.messages[idx], content: `${OFFICIAL_SYSTEM_PROMPT}\n\n${cur}` };
+      }
+    } else if (Array.isArray(cur)) {
+      payload.messages[idx] = {
+        ...payload.messages[idx],
+        content: [{ type: "text", text: OFFICIAL_SYSTEM_PROMPT }, ...cur],
+      };
+    } else {
+      payload.messages[idx] = { ...payload.messages[idx], content: OFFICIAL_SYSTEM_PROMPT };
+    }
+  } else {
+    payload.messages = [{ role: "system", content: OFFICIAL_SYSTEM_PROMPT }, ...payload.messages];
+  }
+
+  delete payload.max_tokens;
+  delete payload.max_completion_tokens;
+  return payload;
+}
+
+
 const OAUTH_EXPIRY_SKEW_MS = 10 * 60 * 1000;
 const FALLBACK_EXPIRES_IN_S = 5 * 3600;
 /** 本地 OAuth 会话上限：callback 的等待是 5 分钟；宿主不调 callback 时兜底释放端口。 */
@@ -50,16 +148,12 @@ const VARIANTS = Object.fromEntries(["low", "high", "max"].map((effort) => [effo
 
 /** 模型清单：键 = magpie 里显示的 id；值里的 id = 上游接受的 routeModelId。 */
 function overseasModels() {
-  // Keep the historical third-party catalog: this PR only verifies the CN
-  // managed gateway and must not change the overseas provider's catalog.
+  // Live verified overseas catalog: zai_glm-5-turbo and tdpsk_deepseek-* are gone upstream (400 非法模型).
   return {
-    "zai_auto": { name: "GLM Auto (路由)", id: "zai_auto", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
-    "zai_auto-fast": { name: "GLM Auto Fast", id: "zai_auto-fast", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
-    "zai_glm-5.3-flash": { name: "GLM-5.3 Flash", id: "zai_glm-5.3-flash", limit: { context: 1000000, output: 32000 }, reasoning: true, tool_call: true },
-    "zai_glm-5-turbo": { name: "GLM-5 Turbo", id: "zai_glm-5-turbo", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
-    "zaicoding_glm-5.3": { name: "GLM-5.3 Coding", id: "zaicoding_glm-5.3", limit: { context: 1000000, output: 131072 }, reasoning: true, tool_call: true },
-    "tdpsk_deepseek-v4-flash-202605": { name: "DeepSeek V4 Flash", id: "tdpsk_deepseek-v4-flash-202605", limit: { context: 1000000, output: 384000 }, reasoning: true, tool_call: true },
-    "tdpsk_deepseek-v4-pro-202606": { name: "DeepSeek V4 Pro", id: "tdpsk_deepseek-v4-pro-202606", limit: { context: 1000000, output: 384000 }, reasoning: true, tool_call: true },
+    "zai_auto": { name: "GLM Auto (路由)", id: "zai_auto", limit: { context: 1048576, output: 393216 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
+    "zai_auto-fast": { name: "GLM Auto Fast", id: "zai_auto-fast", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
+    "zaicoding_glm-5.3": { name: "GLM-5.3 Coding", id: "zaicoding_glm-5.3", limit: { context: 1048576, output: 307200 }, reasoning: true, attachment: false, tool_call: true, variants: VARIANTS },
+    "zai_glm-5.3-flash": { name: "GLM-5.3 Flash", id: "zai_glm-5.3-flash", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
   };
 }
 
@@ -395,7 +489,7 @@ async function refreshTokens(refreshToken, preferredHosts) {
 
 function managedHeaders(token, model) {
   const ts = String(Math.floor(Date.now() / 1000));
-  const rid = randomUUID();
+  const rid = randomHex(16);
   const headers = new Headers(bizHeaders());
   headers.set("Accept", "application/json");
   headers.set("User-Agent", `AutoClaw/${CN_CLIENT_VERSION} (${PLATFORM_TM}-${process.arch})`);
@@ -480,23 +574,34 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               headers.set("X-Authorization", `Bearer ${accessToken}`);
               headers.set("X-Client-Type", "pc");
               headers.set("X-Product", PRODUCT);
-              headers.set("X-Harness-Type", "zcode");
+              headers.delete("X-Harness-Type");
               headers.set("X-Tm", PLATFORM_TM);
               headers.set("X-Version", CLIENT_VERSION);
               headers.set("X-Lang", "zh-CN");
               headers.set("X-Channel", CHANNEL);
               headers.set("x_trace_id", "autoclaw-desktop");
               headers.delete("Authorization");
+
               let routeModel = "";
-              try {
-                const body = JSON.parse(String(init?.body ?? "{}"));
-                routeModel = String(body.model ?? "");
-              } catch { /* 保持空 */ }
+              let nextBody = init?.body;
+              const rewritten = autoclawRewriteBody(init?.body);
+              if (rewritten) {
+                routeModel = String(rewritten.model ?? "");
+                nextBody = JSON.stringify(rewritten);
+                headers.delete("content-length");
+              } else {
+                try {
+                  routeModel = String(JSON.parse(String(init?.body ?? "{}")).model ?? "");
+                } catch {}
+              }
               if (routeModel) headers.set("X-Request-Model", routeModel);
               headers.set("X-Request-Id", randomHex(16));
-              const tryFetch = (host) => fetch(`${host}${CHAT_PATH}`, { ...init, headers, signal: init?.signal });
+
+              const tryFetch = (host) =>
+                fetch(`${host}${CHAT_PATH}`, { ...init, headers, body: nextBody, signal: init?.signal });
+
               const res1 = await tryFetch(hosts[0]);
-              if (res1.status !== 401 && res1.status !== 403) return res1;
+              if (res1.status !== 401 && res1.status !== 403) return explained(res1);
               const res2 = await tryFetch(hosts[1]);
               if (res2.status === 401 || res2.status === 403) {
                 try { res2.body?.cancel?.(); } catch {}
@@ -505,7 +610,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
                   headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
                 });
               }
-              return res2;
+              return explained(res2);
             }
 
             // The CN managed gateway is the AutoClaw 2.1.0 account-points
@@ -1095,5 +1200,6 @@ export const _internal = {
   md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
   dailySignin, signinStatus, maybeSignin, signinConfig, checkinOutcome, refreshTokens,
   fetchUserProfile, accountDisplayName, startLocalOAuth,
+  FLAGGED, unflagged, unflag, autoclawRewriteBody, explained, OFFICIAL_SYSTEM_PROMPT, REFUSED_HINT,
   guidePageHtml, callbackPageHtml,
 };

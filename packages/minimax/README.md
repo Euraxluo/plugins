@@ -112,17 +112,12 @@ These are read the way MiniMax Code reads them, with its signed account API.
 The account's daily check-in (每日签到) is claimed through the same sign-in:
 the plugin reads the panel (`/minimax-cloud/api/v1/signin/status`) and
 claims the day's credits (`/minimax-cloud/api/v1/signin/claim`) with the
-account's Bearer token, on the same host the chats go to. magpie runs it
-once a day per account; Settings → Usage → Plugins has the per-provider
-switch and a *Check in now* button, and the outcome — claimed, done,
-inactive, ineligible, with the streak — lands on the account's Usage card.
+same signed account API. magpie can run it once a day per account, when its
+MiniMax check-in switch is on; Settings → Usage → Plugins has that switch
+and a *Check in now* button, and the outcome — claimed, done, inactive,
+ineligible, with the streak — lands on the account's Usage card.
 OpenCode doesn't call this hook: there, check in from MiniMax Code or
 MiniMax's site.
-
-Known gap: on the China site the day can read claimed while the credits
-never land — as of October 2026 the CN upstream grants nothing for the
-check-in (the credit pool stays empty), where the international site pays
-out normally. The card shows what the account's own APIs report.
 
 ## Not here
 

@@ -498,33 +498,15 @@ function usageOf(m, windows = []) {
 // ---- check-in ----------------------------------------------------------------
 
 // MiniMax pays a few credits for the daily check-in (每日签到). The panel
-// lists the month's days — status 1 not started, 2 claimable, 3 claimed,
-// 4 not available — and the claim answers 1 claimed now or 2 already today.
-// The account's Bearer token is enough on the minimax-cloud endpoints (no
-// webview JWT's md5 signature is needed), as quota-hub's minimax2api worked
-// out. Tests point site.llm at a fake of their own.
-const checkinTZ = () => {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai" } catch { return "Asia/Shanghai" }
-}
-
+// lists the week's seven days — status 1 not started, 2 claimable, 3
+// claimed, 4 not available — and the claim answers 1 claimed now or 2
+// already today. Both calls use the same signed account client as the rest
+// of the account API: the gateway checks the signature, and a Bearer-only
+// Bun fetch is not what MiniMax Code sends.
 async function checkinCall(site, access, method, path, body) {
-  const res = await fetch(site.llm + path, {
-    method,
-    headers: {
-      Accept: "application/json",
-      Authorization: "Bearer " + access,
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(20000),
-  })
-  if (res.status === 401 || res.status === 403) throw new SignInExpired(site)
-  const text = await res.text()
-  let out
-  try { out = JSON.parse(text) } catch { throw new Error(`check-in: HTTP ${res.status}: ${text.trim().slice(0, 120)}`) }
-  const code = out?.base_resp?.status_code
-  if (code !== undefined && code !== 0) throw new Error(`check-in: ${out?.base_resp?.status_msg ?? "error " + code} (${code})`)
-  return out
+  const opts = { access }
+  if (body !== undefined) opts.body = body
+  return accountCall(site, path, opts, "check-in")
 }
 
 // checkinOf reads the panel and claims today: claimed (checked in now,
@@ -533,29 +515,30 @@ async function checkinCall(site, access, method, path, body) {
 // available); a throw is failed. streak counts the claimed days up to and
 // including today.
 async function checkinOf(site, access) {
-  const tz = checkinTZ()
-  const q = "?timezone_id=" + encodeURIComponent(tz)
-  const panel = await checkinCall(site, access, "GET", "/minimax-cloud/api/v1/signin/status" + q)
-  const days = Array.isArray(panel?.data?.days) ? panel.data.days : []
-  const today = days.find((d) => d?.is_today) ?? days[days.length - 1]
-  // the claimed days before today
-  const streakBefore = () => {
+  const panel = await checkinCall(site, access, "GET", "/minimax-cloud/api/v1/signin/status")
+  const days = Array.isArray(panel?.data?.days) ? panel.data.days : null
+  if (!days?.length) throw new Error("check-in: no panel in the reply")
+  const sorted = [...days].sort((a, b) => (a?.day_no ?? 0) - (b?.day_no ?? 0))
+  if (sorted.length !== 7 || sorted.some((d, i) => d?.day_no !== i + 1)) throw new Error("check-in: malformed panel")
+  const todays = sorted.filter((d) => d?.is_today)
+  const claimable = sorted.filter((d) => d?.status === 2)
+  if (todays.length > 1 || claimable.length > 1) throw new Error("check-in: malformed panel")
+  const today = todays[0]
+  if (!today) return { outcome: "inactive" }
+  const streakFrom = (i) => {
     let n = 0
-    for (let i = days.length - 1; i >= 0; i--) {
-      const d = days[i]
-      if (d?.is_today) continue
-      if (d?.status === 3) n++
-      else break
-    }
+    for (let j = i; j >= 0 && sorted[j]?.status === 3; j--) n++
     return n
   }
-  if (!today) return { outcome: "inactive" }
-  if (today.status === 3) return { outcome: "done", streak: streakBefore() + 1 }
+  if (today.status === 3) {
+    const points = pos(today, "points")
+    return { outcome: "done", ...(points ? { credit: points } : {}), streak: streakFrom(sorted.indexOf(today)) }
+  }
   if (today.status === 2) {
-    const claim = await checkinCall(site, access, "POST", "/minimax-cloud/api/v1/signin/claim" + q, {})
+    const claim = await checkinCall(site, access, "POST", "/minimax-cloud/api/v1/signin/claim", {})
     const r = pos(claim?.data, "claim_result")
     const credit = pos(claim?.data, "points")
-    const got = { ...(credit ? { credit } : {}), streak: streakBefore() + 1 }
+    const got = { ...(credit ? { credit } : {}), streak: streakFrom(sorted.indexOf(today) - 1) + 1 }
     if (r === 1) return { outcome: "claimed", ...got }
     if (r === 2) return { outcome: "done", ...got }
     throw new Error(`check-in: unknown claim_result ${JSON.stringify(claim?.data?.claim_result)}`)

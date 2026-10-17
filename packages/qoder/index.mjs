@@ -1644,20 +1644,41 @@ const makePlugin = (site) => async ({ client }) => {
       }
       const listRes = await call(base, "GET")
       let list = {}
-      try { list = JSON.parse(await listRes.text()) ?? {} } catch {}
+      let listRaw = ""
+      try {
+        listRaw = await listRes.text()
+        list = JSON.parse(listRaw) ?? {}
+      } catch {
+        return { outcome: "failed", message: `campaigns: unreadable reply ${listRaw.trim().slice(0, 120) || "(empty)"}` }
+      }
       if (listRes.status !== 200) return { outcome: "failed", message: `campaigns: HTTP ${listRes.status}` }
-      const campaign = (Array.isArray(list.campaigns) ? list.campaigns : []).find((x) => x?.actionType === "CLAIM_BENEFIT")
-      if (!campaign) return { outcome: "inactive" }
-      const amount = Number(campaign.benefit?.amount)
-      const credit = Number.isFinite(amount) && amount > 0 ? amount : undefined
-      if (campaign.claimStatus === "CLAIMED") return { outcome: "done", ...(credit ? { credit } : {}) }
-      if (campaign.claimStatus !== "CLAIMABLE") return { outcome: "inactive" }
+      const now = Date.now()
+      const active = (c) => (!c.startAt || c.startAt * 1000 <= now) && (!c.endAt || c.endAt * 1000 > now)
+      const campaigns = (Array.isArray(list.campaigns) ? list.campaigns : []).filter((x) => x?.actionType === "CLAIM_BENEFIT")
+      const campaign = campaigns.find((x) => x.claimStatus === "CLAIMABLE")
+      if (!campaign) {
+        const done = campaigns.find((x) => x.claimStatus === "CLAIMED" && active(x))
+        if (done) {
+          const amount = Number(done.benefit?.amount)
+          return { outcome: "done", ...(Number.isFinite(amount) && amount > 0 ? { credit: amount } : {}) }
+        }
+        return campaigns.length ? { outcome: "failed", message: "campaigns: today's credits aren't offered yet" } : { outcome: "inactive" }
+      }
       const claimRes = await call(base.replace(/\/$/, "") + "/" + encodeURIComponent(campaign.campaignId) + "/claim", "POST", "{}")
       let claim = {}
-      try { claim = JSON.parse(await claimRes.text()) ?? {} } catch {}
+      let claimRaw = ""
+      try {
+        claimRaw = await claimRes.text()
+        claim = JSON.parse(claimRaw) ?? {}
+      } catch {
+        return { outcome: "failed", message: `claim: unreadable reply ${claimRaw.trim().slice(0, 120) || "(empty)"}` }
+      }
       const said = claim?.status ?? claim?.data?.status
       if (claimRes.status !== 200) return { outcome: "failed", message: `claim: HTTP ${claimRes.status}` }
-      if (said === "CLAIMED") return { outcome: "claimed", ...(credit ? { credit } : {}) }
+      if (said === "CLAIMED") {
+        const amount = Number(claim?.benefit?.amount ?? claim?.data?.benefit?.amount ?? campaign.benefit?.amount)
+        return { outcome: "claimed", ...(Number.isFinite(amount) && amount > 0 ? { credit: amount } : {}) }
+      }
       return { outcome: "failed", message: `claim: ${said || "unknown answer"}` }
     } catch (e) {
       return { outcome: "failed", message: e?.message ?? String(e), ...(e?.expired ? { signIn: "expired" } : {}) }

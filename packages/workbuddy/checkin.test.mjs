@@ -52,7 +52,14 @@ test("China asks the activity status, then claims through /v2", async () => {
 })
 
 test("the activity status already claimed is done without another claim", async () => {
-  const calls = serve({ "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, todayCheckedIn: true }) })
+  const calls = serve({ "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, today_checked_in: true, daily_credit: 100 }) })
+  const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
+  expect(await checkinOf(WorkBuddyAuthPlugin, auth)).toEqual({ outcome: "done", credit: 100 })
+  expect(calls).toHaveLength(1)
+})
+
+test("the status code for an already checked day is done", async () => {
+  const calls = serve({ "/v2/billing/meter/checkin-activity-status": () => business(1001, "今天已签到，请明天再来") })
   const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
   expect(await checkinOf(WorkBuddyAuthPlugin, auth)).toEqual({ outcome: "done" })
   expect(calls).toHaveLength(1)

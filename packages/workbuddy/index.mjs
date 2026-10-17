@@ -1224,9 +1224,18 @@ async function meter(site, a, path, body = {}) {
 // observed on the billing endpoint; callers may shorten the waits for a
 // test).
 async function checkinOf(site, a, { waits = [0, 0] } = {}) {
-  const status = await meter(site, a, "/v2/billing/meter/checkin-activity-status")
+  let status
+  try {
+    status = await meter(site, a, "/v2/billing/meter/checkin-activity-status")
+  } catch (e) {
+    if (e?.code === 1001) return { outcome: "done" }
+    throw e
+  }
   if (!status?.active) return { outcome: "inactive" }
-  if (status.todayCheckedIn) return { outcome: "done" }
+  if (status.today_checked_in ?? status.todayCheckedIn) {
+    const credit = Number(status.daily_credit ?? status.today_credit)
+    return { outcome: "done", ...(Number.isFinite(credit) && credit > 0 ? { credit } : {}) }
+  }
   const paths = ["/v2/billing/meter/daily-checkin"]
   for (let attempt = 0; ; attempt++) {
     let i = 0

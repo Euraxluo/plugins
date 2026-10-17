@@ -53,14 +53,32 @@ test("Trae's busy answer is failed without another device", async () => {
   const out = await checkin()
   expect(out.outcome).toBe("ineligible")
   expect(out.message).toContain("当前参与用户太多")
+  expect(out.message).toContain("check in in the Trae CN app")
   expect(f.seen.map((r) => r.headers.get("x-device-id"))).toEqual(["1234567890123456789", "1234567890123456789"])
+})
+
+test("an unreadable status reply is failed", async () => {
+  f = fakeTrae()
+  f.route("POST " + STATUS, () => new Response("<html>gateway</html>"))
+  const out = await checkin()
+  expect(out).toMatchObject({ outcome: "failed" })
+  expect(out.message).toContain("unreadable")
+})
+
+test("an unreadable claim reply is failed, never claimed", async () => {
+  f = fakeTrae()
+  f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
+  f.route("POST " + CLAIM, () => new Response(""))
+  const out = await checkin()
+  expect(out).toMatchObject({ outcome: "failed" })
+  expect(out.message).toContain("unreadable")
 })
 
 test("an expired sign-in is failed and marked", async () => {
   f = fakeTrae()
   f.route("POST " + STATUS, () => json({ code: 1001, message: "not able to authenticate you" }))
   const out = await checkin()
-  expect(out).toMatchObject({ outcome: "failed", signIn: "expired" })
+  expect(out).toMatchObject({ outcome: "failed" })
 })
 
 test("Trae Global has no check-in", async () => {

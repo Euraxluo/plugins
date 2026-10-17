@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
-  "files": ["index.mjs", "prompt.mjs", "README.md"],
+  "files": ["index.mjs", "prompt.mjs", "sign.mjs", "README.md"],
   "keywords": ["opencode", "opencode-plugin", "magpie", "zcode", "z.ai", "bigmodel", "glm", "coding-plan"],
   "license": "MIT",
   "repository": {

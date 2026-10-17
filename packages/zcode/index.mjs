@@ -16,11 +16,12 @@
 // `refresh` the rest of it as JSON (site, base, key, jwt, team project,
 // plan, device id), `accountId` the account's email.
 
-import { createDecipheriv, createHash } from "node:crypto"
+import { createDecipheriv, createHash, randomBytes } from "node:crypto"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { arch, homedir, release, userInfo } from "node:os"
 import { isAbsolute, join } from "node:path"
 import PROMPT from "./prompt.mjs"
+import { createSigner } from "./sign.mjs"
 
 const PROVIDER = "zcode"
 const ZCODE = "https://zcode.z.ai"
@@ -233,6 +234,17 @@ async function plansOf(s) {
 // blocked remembers the models a gift said it has none left for: a key+jwt+
 // model for a minute, so one turn that is refused does not ask again.
 const blocked = new Map()
+
+const signedSigners = new Map()
+const signedChannel = (key) => {
+  let s = signedSigners.get(key)
+  if (!s) {
+    s = createSigner({ apiKey: key })
+    signedSigners.set(key, s)
+  }
+  return s
+}
+const SIGNED_SUFFIX = "-Signed"
 
 // giftServes: the gift's buckets name their models lowercased ("glm-5.3-
 // flash"); what is asked for arrives as the plan lists it ("GLM-5.3-Flash").
@@ -1571,6 +1583,12 @@ export async function ZCodeAuthPlugin({ client }) {
           if (out[id]) continue
           out[id] = model({ ...about(raw), id }, url)
         }
+        if (!start && siteOf(s.site) === "bigmodel") {
+          for (const m of ms) {
+            const id = m.id + SIGNED_SUFFIX
+            if (!out[id]) out[id] = model({ ...m, id }, url)
+          }
+        }
         if (fell) out[Symbol.for("magpie.fellBack")] = true
         return out
       },
@@ -1603,11 +1621,16 @@ export async function ZCodeAuthPlugin({ client }) {
             // a dual account's body is read ahead of sending, so a gift that
             // says it is spent can spend nothing and replay what was asked for
             let start = alone
-            let orig, forcedGift = false
+            let orig, forcedGift = false, signed = false
             if (opts.body != null) {
               orig = opts.body = typeof opts.body === "string" ? opts.body : await new Response(opts.body).text()
               delete opts.duplex
               let m = modelOf(orig)
+              let signed = m.toLowerCase().endsWith(SIGNED_SUFFIX.toLowerCase())
+              if (signed) {
+                orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: m.slice(0, -SIGNED_SUFFIX.length) })
+                m = modelOf(orig)
+              }
               if (m.toLowerCase().endsWith("-trial")) {
                 gift ??= await startPlan(s.jwt, s.device).catch(() => null)
                 const raw = giftModel(gift, m)
@@ -1632,7 +1655,27 @@ export async function ZCodeAuthPlugin({ client }) {
             }
             let h = new Headers(opts.headers)
             const place = workPlace(h)
-            if (start) {
+            if (signed) {
+              if (siteOf(s.site) !== "bigmodel") {
+                const error = { type: "invalid_request_error", message: "The signed channel is for BigModel Coding Plan keys" }
+                return kept(new Response(JSON.stringify({ type: "error", error }), { status: 400, headers: { "content-type": "application/json" } }))
+              }
+              if (!key) throw new Error("ZCode's sign-in has no key; sign in again")
+              swap(BIGMODEL_BASE)
+              h.delete("authorization")
+              h.set("x-api-key", key)
+              h.set("Authorization", "Bearer " + key)
+              const signer = signedChannel(key)
+              const sessionID = randomBytes(16).toString("hex")
+              let hdr
+              try {
+                hdr = await signer.headers(sessionID, modelOf(orig))
+              } catch {
+                // Signing is optional: a failed handshake falls back to ZCode's normal key channel.
+                hdr = null
+              }
+              if (hdr) for (const [k, v] of Object.entries(hdr)) h.set(k, v)
+            } else if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
               if (!s.jwt) throw new Error("ZCode's sign-in has no key; sign in again")
               swap(START_BASE)

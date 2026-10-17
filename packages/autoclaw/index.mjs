@@ -46,14 +46,12 @@ const OAUTH_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** 模型清单：键 = magpie 里显示的 id；值里的 id = 上游接受的 routeModelId。 */
 function autoclawModels() {
+  // AutoClaw's live managed-model catalog currently lists these four only.
   return {
-    "zai_auto": { name: "GLM Auto (路由)", id: "zai_auto", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
-    "zai_auto-fast": { name: "GLM Auto Fast", id: "zai_auto-fast", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
-    "zai_glm-5.3-flash": { name: "GLM-5.3 Flash", id: "zai_glm-5.3-flash", limit: { context: 1000000, output: 32000 }, reasoning: true, tool_call: true },
-    "zai_glm-5-turbo": { name: "GLM-5 Turbo", id: "zai_glm-5-turbo", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
-    "zaicoding_glm-5.3": { name: "GLM-5.3 Coding", id: "zaicoding_glm-5.3", limit: { context: 1000000, output: 131072 }, reasoning: true, tool_call: true },
-    "tdpsk_deepseek-v4-flash-202605": { name: "DeepSeek V4 Flash", id: "tdpsk_deepseek-v4-flash-202605", limit: { context: 1000000, output: 384000 }, reasoning: true, tool_call: true },
-    "tdpsk_deepseek-v4-pro-202606": { name: "DeepSeek V4 Pro", id: "tdpsk_deepseek-v4-pro-202606", limit: { context: 1000000, output: 384000 }, reasoning: true, tool_call: true },
+    "zai_auto": { name: "Auto", id: "zai_auto", limit: { context: 1048576, output: 393216 }, reasoning: true, attachment: true, tool_call: true, variants: ["low", "high", "max"] },
+    "zai_auto-fast": { name: "Auto-Fast", id: "zai_auto-fast", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: ["low", "high", "max"] },
+    "zaicoding_glm-5.3": { name: "GLM-5.3", id: "zaicoding_glm-5.3", limit: { context: 1048576, output: 307200 }, reasoning: true, attachment: false, tool_call: true, variants: ["low", "high", "max"] },
+    "zai_glm-5.3-flash": { name: "GLM-5.3-Flash", id: "zai_glm-5.3-flash", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: ["low", "high", "max"] },
   };
 }
 

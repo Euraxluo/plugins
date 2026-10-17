@@ -80,7 +80,7 @@ EOF
 - 注入官方 AutoClaw system prompt 作为第一条消息，调用方的 system 保留为第二条
 - 保留调用方的 `stream` 选择；删除会被网关拒绝的 `max_tokens`
 - 完整 managed 请求头：MD5 身份签名、`X-Agent-Id`、trace/request/model/client 头和 `X-Authorization`
-- 模型 ID 保持调用方选择的值原样发送；所有官方目录模型均可使用
+- Model catalog matches AutoClaw’s live managed catalog: `zai_auto`, `zai_auto-fast`, `zaicoding_glm-5.3`, and `zai_glm-5.3-flash`
 
 国际版暂不套用国内 managed gateway：当前验证只覆盖国内版，国际版保持原路径。
 

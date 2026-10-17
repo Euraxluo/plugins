@@ -250,26 +250,26 @@ test("CN's managed gateway gets AutoClaw's official body and headers", async () 
   const calls = []
   globalThis.fetch = async (input, init) => {
     calls.push({ url: String(input), init, headers: new Headers(init?.headers) })
-    return Response.json({ id: "x", object: "chat.completion", created: 1, model: "zai_glm-5-turbo", choices: [{ index: 0, message: { role: "assistant", content: "OK" }, finish_reason: "stop" }] })
+    return Response.json({ id: "x", object: "chat.completion", created: 1, model: "zai_auto-fast", choices: [{ index: 0, message: { role: "assistant", content: "OK" }, finish_reason: "stop" }] })
   }
   try {
     const factory = await makePlugin("autoclaw-cn")
     const hooks = await factory({ client: { auth: { set: async () => {} } } }, {})
     const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
-    const res = await loader.fetch("x", { body: JSON.stringify({ model: "zai_glm-5-turbo", stream: false, max_tokens: 12, stream_options: { include_usage: true }, messages: [{ role: "system", content: "mine" }, { role: "user", content: "hi" }] }) })
+    const res = await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto-fast", stream: false, max_tokens: 12, stream_options: { include_usage: true }, messages: [{ role: "system", content: "mine" }, { role: "user", content: "hi" }] }) })
     const sent = JSON.parse(calls[0].init.body)
     expect(calls[0].url).toBe("https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw/chat/completions")
-    expect(sent.model).toBe("zai_glm-5-turbo")
+    expect(sent.model).toBe("zai_auto-fast")
     expect(sent.stream).toBe(false)
     expect(sent.max_tokens).toBeUndefined()
     expect(sent.messages.slice(0, 2).map((m) => m.content)).toEqual([expect.any(String), "mine"])
-    expect(calls[0].headers.get("x-request-model")).toBe("zai_glm-5-turbo")
+    expect(calls[0].headers.get("x-request-model")).toBe("zai_auto-fast")
     expect(calls[0].headers.get("x-client-type")).toBe("pc")
     expect(calls[0].headers.get("x-agent-id")).toBe("main")
     expect(calls[0].headers.get("x-authorization")).toBe("Bearer a1")
     expect(res.headers.get("content-type")).toContain("application/json")
     const reply = await res.json()
-    expect(reply.model).toBe("zai_glm-5-turbo")
+    expect(reply.model).toBe("zai_auto-fast")
   } finally { globalThis.fetch = realFetch }
 })
 

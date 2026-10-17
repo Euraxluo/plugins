@@ -223,6 +223,7 @@ test("overseas loader().fetch drops X-Harness-Type and explains 406", async () =
     expect(sent.body.messages[0].content.startsWith(OFFICIAL_SYSTEM_PROMPT)).toBe(true)
     expect(sent.body.messages[0].content).not.toMatch(/DeepSeek Harness/)
     expect(sent.headers.get("X-Harness-Type")).toBe(null)
+    expect(sent.headers.get("User-Agent")).toMatch(/^AutoClaw\//)
 
     status = 406
     const refused = await loader.fetch("x", { method: "POST", body })
@@ -423,10 +424,12 @@ test("CN preserves string and array system content", async () => {
     ])
     await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto", messages: [{ role: "system", content: "mine" }, { role: "user", content: "hi" }] }) })
     expect(calls[1].messages[0].content).toBe("You are AutoClaw. Answer the user directly and concisely.\n\nmine")
+    await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto", messages: [{ role: "system", content: "You are Claude Code" }] }) })
+    expect(calls[2].messages[0].content).toBe("You are AutoClaw. Answer the user directly and concisely.\n\nYou are the Claude Code CLI")
   } finally { globalThis.fetch = realFetch }
 })
 
-test("CN and overseas catalogs match the live models and use variant objects", async () => {
+test("CN managed catalog uses variant objects and overseas keeps its limits", async () => {
   const factory = makePlugin("autoclaw-cn")
   const cn = await factory({ client: { auth: { set: async () => {} } } }, {})
   const cfg = { provider: {} }
@@ -438,8 +441,9 @@ test("CN and overseas catalogs match the live models and use variant objects", a
   const overseas = await makePlugin("autoclaw")({ client: { auth: { set: async () => {} } } }, {})
   const oc = { provider: {} }
   await overseas.config(oc)
-  expect(Object.keys(oc.provider.autoclaw.models.zai_auto.variants)).toEqual(["low", "high", "max"])
   expect(Object.keys(oc.provider.autoclaw.models)).toEqual(["zai_auto", "zai_auto-fast", "zaicoding_glm-5.3", "zai_glm-5.3-flash"])
+  expect(oc.provider.autoclaw.models.zai_auto.limit).toEqual({ context: 200000, output: 32000 })
+  expect(oc.provider.autoclaw.models["zaicoding_glm-5.3"].limit).toEqual({ context: 1000000, output: 131072 })
 })
 
 test("CN passes SSE through and marks 401 expired", async () => {

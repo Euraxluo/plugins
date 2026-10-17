@@ -150,10 +150,10 @@ const VARIANTS = Object.fromEntries(["low", "high", "max"].map((effort) => [effo
 function overseasModels() {
   // Live verified overseas catalog: zai_glm-5-turbo and tdpsk_deepseek-* are gone upstream (400 非法模型).
   return {
-    "zai_auto": { name: "GLM Auto (路由)", id: "zai_auto", limit: { context: 1048576, output: 393216 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
-    "zai_auto-fast": { name: "GLM Auto Fast", id: "zai_auto-fast", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
-    "zaicoding_glm-5.3": { name: "GLM-5.3 Coding", id: "zaicoding_glm-5.3", limit: { context: 1048576, output: 307200 }, reasoning: true, attachment: false, tool_call: true, variants: VARIANTS },
-    "zai_glm-5.3-flash": { name: "GLM-5.3 Flash", id: "zai_glm-5.3-flash", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
+    "zai_auto": { name: "GLM Auto (路由)", id: "zai_auto", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
+    "zai_auto-fast": { name: "GLM Auto Fast", id: "zai_auto-fast", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
+    "zaicoding_glm-5.3": { name: "GLM-5.3 Coding", id: "zaicoding_glm-5.3", limit: { context: 1000000, output: 131072 }, reasoning: true, tool_call: true },
+    "zai_glm-5.3-flash": { name: "GLM-5.3 Flash", id: "zai_glm-5.3-flash", limit: { context: 1000000, output: 32000 }, reasoning: true, tool_call: true },
   };
 }
 
@@ -513,6 +513,8 @@ function rewriteManagedBody(body) {
   payload.model = model;
   // The gateway rejects max_tokens, but accepts both streaming modes.
   delete payload.max_tokens;
+  delete payload.max_completion_tokens;
+  unflag(messages);
   const [first, ...rest] = messages;
   if (first?.role === "system") {
     // Prefix inside the caller's existing system message avoids competing
@@ -571,6 +573,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
           async fetch(input, init) {
             if (providerId !== "autoclaw-cn") {
               const headers = new Headers(init?.headers);
+              headers.set("User-Agent", USER_AGENT);
               headers.set("X-Authorization", `Bearer ${accessToken}`);
               headers.set("X-Client-Type", "pc");
               headers.set("X-Product", PRODUCT);

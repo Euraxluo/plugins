@@ -54,7 +54,9 @@ test("Trae's busy answer is failed without another device", async () => {
   expect(out.outcome).toBe("ineligible")
   expect(out.message).toContain("当前参与用户太多")
   expect(out.message).toContain("check in in the Trae CN app")
-  expect(f.seen.map((r) => r.headers.get("x-device-id"))).toEqual(["1234567890123456789", "1234567890123456789"])
+  // the check-in rides ugDevice like every other ug page: the 19-digit
+  // sign-in device becomes the account's own 16-digit shape (#194)
+  expect(f.seen.map((r) => r.headers.get("x-device-id"))).toEqual(["2866487253502651", "2866487253502651"])
 })
 
 test("an unreadable status reply is failed", async () => {

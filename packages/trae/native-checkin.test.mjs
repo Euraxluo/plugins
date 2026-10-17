@@ -39,11 +39,11 @@ test("a disabled day is inactive", async () => {
   expect(f.seen.map((r) => r.path)).toEqual([STATUS])
 })
 
-test("the device's already-checked answer is done", async () => {
+test("the device's already-checked answer is ineligible", async () => {
   f = fakeTrae()
   f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
-  f.route("POST " + CLAIM, () => json({ code: 9095, message: "已签到", credits: 100 }))
-  expect(await checkin()).toEqual({ outcome: "done", credit: 100 })
+  f.route("POST " + CLAIM, () => json({ code: 9095, message: "this device has checked in today", credits: 100 }))
+  expect(await checkin()).toEqual({ outcome: "ineligible", message: "this device has checked in today" })
 })
 
 test("Trae's busy answer is failed without another device", async () => {
@@ -51,7 +51,7 @@ test("Trae's busy answer is failed without another device", async () => {
   f.route("POST " + STATUS, () => json({ code: 0, enable: true, checked_in: false }))
   f.route("POST " + CLAIM, () => json({ code: 9074, message: "当前参与用户太多" }))
   const out = await checkin()
-  expect(out.outcome).toBe("failed")
+  expect(out.outcome).toBe("ineligible")
   expect(out.message).toContain("当前参与用户太多")
   expect(f.seen.map((r) => r.headers.get("x-device-id"))).toEqual(["1234567890123456789", "1234567890123456789"])
 })

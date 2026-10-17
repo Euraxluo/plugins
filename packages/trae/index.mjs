@@ -2543,20 +2543,26 @@ const makePlugin = (site) => async ({ client }) => {
     if (!a0) return { outcome: "failed", message: "not signed in" }
     const base = site.hosts.auth + site.checkin.status.path
     const status = await ownRequest(getAuth, a0, base, "POST", "{}")
-    const body = parseJSON(await status.text())
+    const statusText = await status.text()
+    const body = parseJSON(statusText)
+    if (!body || typeof body !== "object") return { outcome: "failed", message: `check-in status: unreadable reply ${statusText.trim().slice(0, 120) || "(empty)"}` }
     const e = errorOf(body)
     if (status.status === 401 || lapsedCode(e.code, site)) return { outcome: "failed", message: e.message || `${a0.name || a0.uid}: Trae's sign-in has expired`, signIn: "expired" }
     if (status.status !== 200 || (e.code && String(e.code) !== "0")) return { outcome: "failed", message: e.message || statusLine(status.status) }
     if (body?.checked_in) return { outcome: "done", ...(Number(body.credits) > 0 ? { credit: Number(body.credits) } : {}) }
     if (!body?.enable) return { outcome: "inactive" }
     const claim = await ownRequest(getAuth, a0, site.hosts.auth + site.checkin.claim.path, "POST", "{}")
-    const answer = parseJSON(await claim.text())
+    const claimText = await claim.text()
+    const answer = parseJSON(claimText)
     const ce = errorOf(answer)
     if (claim.status === 401 || lapsedCode(ce.code, site)) return { outcome: "failed", message: ce.message || `${a0.name || a0.uid}: Trae's sign-in has expired`, signIn: "expired" }
-    if (String(ce.code) === "9095") return { outcome: "done", ...(Number(answer?.credits) > 0 ? { credit: Number(answer.credits) } : {}) }
-    if (String(ce.code) === "9074") return { outcome: "failed", message: ce.message || "Trae says too many users are taking part; try again later" }
+    if (String(ce.code) === "9095") return { outcome: "ineligible", message: ce.message || "this device has checked in today" }
+    if (String(ce.code) === "9074") return { outcome: "ineligible", message: ce.message || "Trae CN is too busy; check in in the Trae CN app" }
     if (claim.status !== 200 || (ce.code && String(ce.code) !== "0")) return { outcome: "failed", message: ce.message || statusLine(claim.status) }
-    return { outcome: "claimed", ...(Number(answer?.credits) > 0 ? { credit: Number(answer.credits) } : {}) }
+    if (!answer || typeof answer !== "object") return { outcome: "failed", message: `check-in claim: unreadable reply ${claimText.trim().slice(0, 120) || "(empty)"}` }
+    const credit = Number(answer.credits) + Number(answer.extra_credits || 0)
+    const fallback = Number(body.credits) + Number(body.extra_credits || 0)
+    return { outcome: "claimed", ...(credit > 0 ? { credit } : fallback > 0 ? { credit: fallback } : {}) }
   }
 
   const usage = async (getAuth) => {

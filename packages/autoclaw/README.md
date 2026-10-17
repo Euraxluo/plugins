@@ -72,6 +72,19 @@ EOF
 | `signinOnUsage` | `false` | 查额度/刷新时自动补签（默认关，交给原生开关） |
 | `signinHour` | `null` | 限定补签小时：`8` = 仅当本地时间处于 8:00–8:59 时补签；`null` 不限 |
 
+## 国内版 managed gateway
+
+`autoclaw-cn` 的对话请求走 AutoClaw 2.1.0 国内 managed gateway：
+
+- `https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw/chat/completions`
+- 注入官方 AutoClaw system prompt 作为第一条消息，调用方的 system 保留为第二条
+- 强制上游 `stream: true`，删除 `max_tokens` / `stream_options`
+- 调用方要求非流式时，将上游 SSE 聚合为 OpenAI chat completion
+- 完整 managed 请求头：MD5 身份签名、`X-Agent-Id`、trace/request/model/client 头和 `X-Authorization`
+- 模型收敛为 `zai_auto`、`zai_auto-fast`、`zai_glm-5.3-flash`、`zaicoding_glm-5.3`；未知模型回退 `zai_auto`
+
+国际版暂不套用国内 managed gateway：当前验证只覆盖国内版，国际版保持原路径。
+
 ## 已知行为
 
 - 手机号账号只认国内 host、z.ai/Google 账号只认国际 host；对话 fetch 已内置 401/403 自动换侧重试。

@@ -97,7 +97,7 @@ test("loader().fetch signs with X-Authorization and rotates hosts on 401", async
 
     // The chat path goes to the upstream, signed by X-Authorization, not Authorization
     await loader.fetch("x", { headers: { Authorization: "Bearer old" } })
-    expect(calls.at(-1).url).toBe("https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw/v1/chat/completions")
+    expect(calls.at(-1).url).toBe("https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw/chat/completions")
     expect(calls.at(-1).headers.get("X-Authorization")).toBe("Bearer a1")
     expect(calls.at(-1).headers.get("Authorization")).toBe(null)
 
@@ -244,3 +244,39 @@ test("the OAuth callback takes only the state the authorize page handed out", as
     globalThis.fetch = realFetch
   }
 })
+
+test("CN's managed gateway gets AutoClaw's official body and headers", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), init, headers: new Headers(init?.headers) })
+    return new Response('data: {"id":"x","created":1,"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } })
+  }
+  try {
+    const factory = await makePlugin("autoclaw-cn")
+    const hooks = await factory({ client: { auth: { set: async () => {} } } }, {})
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const res = await loader.fetch("x", { body: JSON.stringify({ model: "not-a-model", stream: false, max_tokens: 12, messages: [{ role: "system", content: "mine" }, { role: "user", content: "hi" }] }) })
+    const sent = JSON.parse(calls[0].init.body)
+    expect(calls[0].url).toBe("https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw/chat/completions")
+    expect(sent.model).toBe("zai_auto")
+    expect(sent.stream).toBe(true)
+    expect(sent.max_tokens).toBeUndefined()
+    expect(sent.messages.slice(0, 2).map((m) => m.content)).toEqual([expect.any(String), "mine"])
+    expect(calls[0].headers.get("x-request-model")).toBe("zai_auto")
+    expect(calls[0].headers.get("x-client-type")).toBe("pc")
+    expect(calls[0].headers.get("x-agent-id")).toBe("main")
+    expect(calls[0].headers.get("x-authorization")).toBe("Bearer a1")
+    const reply = await res.json()
+    expect(reply.choices[0].message.content).toBe("OK")
+  } finally { globalThis.fetch = realFetch }
+})
+
+function makePlugin(id) {
+  return _internal.makePluginForTest({
+    providerId: id,
+    providerName: id,
+    homeHost: id === "autoclaw-cn" ? "https://autoglm-api.zhipuai.cn" : "https://autoglm-api.autoglm.ai",
+    loginMethod: { type: "oauth", label: "test", authorize: async () => ({}) },
+  })
+}

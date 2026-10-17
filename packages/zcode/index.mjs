@@ -1526,7 +1526,7 @@ function dress(text, site, device, place) {
 
 // ---- the plugin ------------------------------------------------------------------
 
-export async function ZCodeAuthPlugin({ client }) {
+export async function ZCodeAuthPlugin({ client }, options) {
   const log = (message) => {
     try {
       client?.app?.log?.({ body: { service: "zcode-auth", level: "error", message } })
@@ -1583,7 +1583,7 @@ export async function ZCodeAuthPlugin({ client }) {
           if (out[id]) continue
           out[id] = model({ ...about(raw), id }, url)
         }
-        if (!start && siteOf(s.site) === "bigmodel") {
+        if (!start && options?.signed === true && siteOf(s.site) === "bigmodel") {
           for (const m of ms) {
             const id = m.id + SIGNED_SUFFIX
             if (!out[id]) out[id] = model({ ...m, id }, url)

@@ -68,10 +68,11 @@ asks again every 10 minutes:
   `<model>-Trial`; asking that entry spends the gift (see below).
 - Otherwise they go to the gift plans.
 
-A BigModel Coding Plan also lists each model as `<model>-Signed`. That
-opt-in entry strips the suffix, sends the normal Coding Plan key, and adds
-BigModel's zhipu-client-sign headers; a failed handshake is an error. Plain
-entries keep their existing unsigned behavior.
+Set the plugin option `"signed": true` and a BigModel Coding Plan lists each
+model as `<model>-Signed`. That opt-in entry strips the suffix, sends the
+normal Coding Plan key, and adds BigModel's zhipu-client-sign headers; a
+failed handshake is an error. The catalog and plain entries keep their
+existing unsigned behavior while the option is off (the default).
 
 Every request carries the key as both `x-api-key` and
 `Authorization: Bearer`.

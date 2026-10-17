@@ -53,15 +53,26 @@ async function send(model) {
   })
 }
 
+async function modelsOf(options) {
+  const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } }, options)
+  return hooks.provider.models({ models: {} }, { auth })
+}
+
 test("PoW follows glmsign's first-byte rule", () => {
   expect(POW).toBeTruthy()
   expect(createHash("sha256").update(`${createHash("sha256").update("key\nzcode\nsession\n123").digest("hex").slice(0, 32)}\n${POW}`).digest()[0]).toBe(0)
 })
 
 test("BigModel coding models gain opt-in Signed aliases", async () => {
-  const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const models = await hooks.provider.models({ models: {} }, { auth })
-  expect(models["GLM-5.3-Signed"]).toMatchObject({ id: "GLM-5.3-Signed" })
+  const enabled = await modelsOf({ signed: true })
+  expect(enabled["GLM-5.3-Signed"]).toMatchObject({ id: "GLM-5.3-Signed" })
+})
+
+test("Signed aliases stay out of the catalog unless the option is on", async () => {
+  const models = await modelsOf()
+  expect(models["GLM-5.3-Signed"]).toBeUndefined()
+  const enabled = await modelsOf({ signed: true })
+  expect(enabled["GLM-5.3-Signed"]).toMatchObject({ id: "GLM-5.3-Signed" })
 })
 
 test("a Signed alias strips its suffix and signs without fallback", async () => {

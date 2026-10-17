@@ -17,7 +17,7 @@
 // plan, device id), `accountId` the account's email.
 
 import { createDecipheriv, createHash, randomBytes } from "node:crypto"
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs"
 import { arch, homedir, release, userInfo } from "node:os"
 import { isAbsolute, join } from "node:path"
 import PROMPT from "./prompt.mjs"
@@ -239,7 +239,10 @@ const signedSigners = new Map()
 const signedChannel = (key) => {
   let s = signedSigners.get(key)
   if (!s) {
-    s = createSigner({ apiKey: key })
+    const cacheDir = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "magpie")
+    try { mkdirSync(cacheDir, { recursive: true }) } catch {}
+    const cachePath = join(cacheDir, "zcode-sign-key.json")
+    s = createSigner({ apiKey: key, cachePath })
     signedSigners.set(key, s)
   }
   return s

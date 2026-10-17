@@ -1,6 +1,6 @@
 // BigModel's zhipu-client-sign channel, ported from quota-hub glmsign. It
-// serves opt-in -Signed model entries and keeps no credentials outside the
-// in-memory signer bound to the current auth key.
+// serves opt-in -Signed model entries. The derived signing key is cached only
+// in memory (and optionally in a 0600 file sealed with the API key's HKDF).
 import {
   createCipheriv,
   createDecipheriv,
@@ -10,6 +10,7 @@ import {
   randomBytes,
   sign as cryptoSign,
 } from "node:crypto"
+import { readFileSync, renameSync, writeFileSync } from "node:fs"
 
 const UPSTREAM = "https://open.bigmodel.cn"
 const HANDSHAKE_PATH = "/api/paas/c1f3a7e2/v2/client"
@@ -69,9 +70,34 @@ function privateKeyFromDER(der) {
   return key
 }
 
-export function createSigner({ apiKey, fetchImpl = globalThis.fetch } = {}) {
+function cacheKey(secret) {
+  return hkdf(secret, "local-key-cache", 32)
+}
+
+function readKeyCache(path, keyID, secret, setKey) {
+  if (!path) return
+  let entry = {}
+  try { entry = JSON.parse(readFileSync(path, "utf8")) ?? {} } catch { return }
+  if (entry.keyId !== keyID || typeof entry.cipher !== "string" || !entry.cipher) return
+  const der = gcmOpen(cacheKey(secret), Buffer.from(entry.cipher, "base64"), keyID)
+  setKey(privateKeyFromDER(der), gcmSeal(cacheKey(secret), der, keyID))
+}
+
+function writeKeyCache(path, keyID, secret, key) {
+  if (!path || !key) return
+  const der = key.export({ format: "der", type: "pkcs8" })
+  const blob = gcmSeal(cacheKey(secret), der, keyID)
+  const raw = JSON.stringify({ keyId: keyID, savedAt: Date.now(), cipher: blob.toString("base64") })
+  const tmp = `${path}.tmp`
+  writeFileSync(tmp, raw, { mode: 0o600 })
+  renameSync(tmp, path)
+}
+
+export function createSigner({ apiKey, cachePath = "", fetchImpl = globalThis.fetch } = {}) {
   let keyID, secret, key, sealedDER, inflight
   if (apiKey !== undefined) [keyID, secret] = splitAPIKey(apiKey)
+  const setKey = (nextKey, sealed) => { key = nextKey; sealedDER = sealed }
+  readKeyCache(cachePath, keyID, secret, setKey)
 
   async function handshake() {
     const ts = String(Date.now())
@@ -98,7 +124,8 @@ export function createSigner({ apiKey, fetchImpl = globalThis.fetch } = {}) {
     const plain = gcmOpen(hkdf(secret, "ed25519_priv", 32), Buffer.from(cipher, "base64"), keyID)
     const der = Buffer.from(plain.toString("utf8").trim(), "base64")
     key = privateKeyFromDER(der)
-    sealedDER = gcmSeal(hkdf(secret, "local-key-cache", 32), der, keyID)
+    sealedDER = gcmSeal(cacheKey(secret), der, keyID)
+    writeKeyCache(cachePath, keyID, secret, key)
   }
 
   async function ensure() {

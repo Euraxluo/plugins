@@ -4,6 +4,8 @@ import { realpathSync } from "node:fs"
 import { ZCodeAuthPlugin, _internal } from "./index.mjs"
 import { createSigner, minePow } from "./sign.mjs"
 import { createCipheriv, createHmac } from "node:crypto"
+import { mkdirSync, rmSync } from "node:fs"
+import { join } from "node:path"
 import { createHash } from "node:crypto"
 
 if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run in an isolated home")
@@ -29,6 +31,9 @@ function sealedKey() {
 beforeEach(() => {
   sent.length = 0
   _internal.signedSigners.clear()
+  // Isolate the optional on-disk signing-key cache as well.
+  try { mkdirSync(join(tmpdir(), "zcode-signed-cache"), { recursive: true }) } catch {}
+  process.env.XDG_CONFIG_HOME = join(tmpdir(), `zcode-signed-cache-${process.pid}`)
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input))
     if (url.pathname === "/api/paas/c1f3a7e2/v2/client") {
@@ -94,6 +99,8 @@ test("a Signed alias strips its suffix and signs without fallback", async () => 
 test("a failed BigModel sign handshake never sends an unsigned coding request", async () => {
   const realPlansOf = _internal.plansOf
   _internal.plansOf = async () => ({ start: false, gift: null })
+  _internal.signedSigners.clear()
+  try { rmSync(join(process.env.XDG_CONFIG_HOME, "magpie", "zcode-sign-key.json"), { force: true }) } catch {}
   globalThis.fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input))
     if (url.pathname === "/api/paas/c1f3a7e2/v2/client") return new Response(JSON.stringify({ code: 403 }), { status: 403 })

@@ -69,7 +69,7 @@ test("MiniMax's own variant: no device code, the user code polled for, ends and 
   const got = await a.callback()
   expect(got.type).toBe("success")
   expect(got.access).toBe("plain-token")
-  expect(got.accountId).toBe("MiniMax Code Global")
+  expect(got.accountId).toBe("MiniMax Code (Global)")
   for (const t of f.seen.filter((r) => r.path === "/oauth2/token")) {
     expect(t.form.user_code).toBe("U-CODE")
     expect(t.form.device_code).toBeUndefined()

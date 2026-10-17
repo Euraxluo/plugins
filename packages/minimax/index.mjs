@@ -41,7 +41,7 @@ const SITES = {
   },
   "minimax-code-global": {
     id: "minimax-code-global",
-    name: "MiniMax Code Global",
+    name: "MiniMax Code (Global)",
     region: "en",
     lang: "en",
     account: "https://account.minimax.io",

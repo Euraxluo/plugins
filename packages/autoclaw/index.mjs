@@ -21,7 +21,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import * as http from "node:http";
-import { spawn } from "node:child_process";
 
 const APP_ID = "100003";
 const APP_KEY = "38d2391985e2369a5fb8227d8e6cd5e5";
@@ -632,7 +631,7 @@ const overseaOAuthMethod = {
  * url = 本地引导页（滑块在内完成，之后自动跳授权页）；callback 挂起等 code，
  * 拿到后直连上游换 token。
  */
-async function startLocalOAuth(vendor, openFn = openBrowser) {
+async function startLocalOAuth(vendor, openFn) {
   const deviceId = newDeviceId();
   const state = {
     captchaReceipt: null,
@@ -803,6 +802,10 @@ async function startLocalOAuth(vendor, openFn = openBrowser) {
     server.listen(fixedPort, "127.0.0.1", () => resolve(fixedPort));
   });
 
+  // Do not hand the host a page until the listener is ready. The host owns
+  // opening authorization URLs, including Windows and remote web sessions.
+  await serverReady;
+
   // 会话最长 OAUTH_SESSION_TIMEOUT_MS：宿主可能永远不调 callback（用户在 magpie
   // 里取消），定时器负责关服务器、释放官方 TokenServer 端口。
   let sessionDone = false;
@@ -822,15 +825,15 @@ async function startLocalOAuth(vendor, openFn = openBrowser) {
   sessionTimer.unref?.();
 
   return {
-    url: "", // 由 callback 里自行开浏览器（本地引导页），宿主不重复打开
-    instructions: `已打开本地引导页（未自动打开时手动访问 http://127.0.0.1:${fixedPort}/ ）：请完成滑块验证并登录授权，完成后自动返回 magpie。`,
+    url: `http://127.0.0.1:${fixedPort}/`, // The host opens this only after listen succeeds.
+    instructions: `本地登录页已就绪（未自动打开时手动访问 http://127.0.0.1:${fixedPort}/ ）：请完成滑块验证并登录授权，完成后自动返回 magpie。`,
     method: "auto",
     async callback() {
       const port = await serverReady;
       const guide = `http://127.0.0.1:${port}/`;
       const redirectUri = `http://localhost:${port}/auth/callback-${vendor}`;
       try {
-        openFn(guide);
+        if (openFn) openFn(guide); // Optional test hook; production uses the host URL.
         const code = await waitFor(5 * 60 * 1000, "浏览器登录");
         const res = await callEnvelope(`/userapi/overseasv1/${vendor}-oauth-login`, {
           method: "POST",
@@ -857,19 +860,6 @@ async function startLocalOAuth(vendor, openFn = openBrowser) {
       }
     },
   };
-}
-
-/** 跨平台打开浏览器（node:child_process，Bun / Node 宿主均可；失败时用户可手动打开 instructions 里的地址）。 */
-function openBrowser(urlStr) {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-  try {
-    // Windows 的 start 是 cmd 内建命令，必须走 shell。
-    const child = process.platform === "win32"
-      ? spawn(cmd, [urlStr], { shell: true, stdio: "ignore", detached: true })
-      : spawn(cmd, [urlStr], { stdio: "ignore", detached: true });
-    child.on("error", () => { /* 打开失败静默：instructions 已给出可手动访问的地址 */ });
-    child.unref();
-  } catch { /* 同上 */ }
 }
 
 /** 引导页：滑块（如启用）→ 继续授权 → 自动跳授权页。 */
@@ -971,6 +961,7 @@ function loadCaptchaLib(){
     setTimeout(()=>resolve(),10000);
   });
 }
+let leavingForAuthorization=false;
 document.getElementById("goBtn").addEventListener("click",async()=>{
   const btn=document.getElementById("goBtn");btn.disabled=true;btn.textContent="正在获取授权页…";
   try{
@@ -979,10 +970,11 @@ document.getElementById("goBtn").addEventListener("click",async()=>{
     if(j.error){msg(j.error,"err");btn.disabled=false;btn.textContent="继续授权";return;}
     document.getElementById("steps").style.display="none";btn.style.display="none";
     document.getElementById("done").style.display="block";
-    setTimeout(()=>{location.href=j.url;},600);
-  }catch(e){msg("网络错误："+e.message,"err");btn.disabled=false;btn.textContent="继续授权";}
+    setTimeout(()=>{leavingForAuthorization=true;location.href=j.url;},600);
+  }catch(e){msg("本地登录连接已断开或会话已结束，请回 magpie 重新发起登录："+e.message,"err");btn.disabled=false;btn.textContent="继续授权";}
 });
 window.addEventListener("beforeunload",()=>{
+  if(leavingForAuthorization)return;
   try{navigator.sendBeacon("/abort",new Blob([JSON.stringify({reason:"页面关闭"})],{type:"application/json"}));}catch(_){}
 });
 boot().catch((e)=>msg("初始化失败："+e.message,"err"));

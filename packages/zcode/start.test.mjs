@@ -81,6 +81,7 @@ async function send(auth, body, { url = "https://api.z.ai/api/anthropic/v1/messa
     ? await opts.fetch(new Request(url, { method: "POST", headers, body }))
     : await opts.fetch(url, { method: "POST", headers, body })
   expect(res.status).toBe(200)
+  expect(got).toHaveLength(1)
   return got[0]
 }
 
@@ -316,14 +317,7 @@ const sentAsIs = (r, key, path) => {
 test("a GLM Coding Plan key's request goes as the agent sent it", async () => {
   sentAsIs(await send({ type: "api", key: "one.secret", metadata: { site: "zai" } }, agentText), "one.secret", "/api.z.ai/api/anthropic/v1/messages")
   got.length = 0
-  const r = await send({ type: "api", key: "two.secret", metadata: { site: "bigmodel" } }, agentText, { url: "https://open.bigmodel.cn/api/anthropic/v1/messages" })
-  expect(got).toHaveLength(2) // the signed coding request, then the model request
-  expect(got[0].path).toBe("/open.bigmodel.cn/api/paas/c1f3a7e2/v2/client")
-  expect(got[1]).toMatchObject({ path: "/open.bigmodel.cn/api/anthropic/v1/messages", body: agentText })
-  expect(got[1].headers.authorization).toBe("Bearer two.secret")
-  expect(got[1].headers["x-api-key"]).toBe("two.secret")
-  expect(got[1].headers["x-client-sig"]).toBeTruthy()
-  expect(got[1].headers["x-client-pow"]).toBeTruthy()
+  sentAsIs(await send({ type: "api", key: "two.secret", metadata: { site: "bigmodel" } }, agentText, { url: "https://open.bigmodel.cn/api/anthropic/v1/messages" }), "two.secret", "/open.bigmodel.cn/api/anthropic/v1/messages")
 })
 
 test("a team seat's request goes as the agent sent it, ZCode's token or not", async () => {

@@ -68,9 +68,10 @@ asks again every 10 minutes:
   `<model>-Trial`; asking that entry spends the gift (see below).
 - Otherwise they go to the gift plans.
 
-A BigModel Coding Plan sends every normal Coding Plan request through
-BigModel's zhipu-client-sign headers, on top of the normal Coding Plan key.
-Start Plan and gift entries keep their own routing and headers unchanged.
+A BigModel Coding Plan also lists each model as `<model>-Signed`. That
+opt-in entry strips the suffix, sends the normal Coding Plan key, and adds
+BigModel's zhipu-client-sign headers; a failed handshake is an error. Plain
+entries keep their existing unsigned behavior.
 
 Every request carries the key as both `x-api-key` and
 `Authorization: Bearer`.

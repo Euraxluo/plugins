@@ -4,6 +4,7 @@ import { realpathSync } from "node:fs"
 import { ZCodeAuthPlugin, _internal } from "./index.mjs"
 import { createSigner, minePow } from "./sign.mjs"
 import { createCipheriv, createHmac } from "node:crypto"
+import { createHash } from "node:crypto"
 
 if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run in an isolated home")
 
@@ -13,6 +14,7 @@ const auth = { type: "oauth", access: KEY, refresh: JSON.stringify(state), expir
 const sent = []
 const real = globalThis.fetch
 const DER = Buffer.from("MC4CAQAwBQYDK2VwBCIEINaofm94EHDBFTX6XkGlMUU8F41qb2mXKe/DMwUJbxCh", "base64")
+const POW = minePow("key", "session", "123")
 
 function sealedKey() {
   const secret = "secret"
@@ -52,14 +54,20 @@ async function send(model) {
 }
 
 test("PoW follows glmsign's first-byte rule", () => {
-  const cand = minePow("key", "session", "123")
-  expect(Number(cand)).toBeGreaterThanOrEqual(0)
+  expect(POW).toBeTruthy()
+  expect(createHash("sha256").update(`${createHash("sha256").update("key\nzcode\nsession\n123").digest("hex").slice(0, 32)}\n${POW}`).digest()[0]).toBe(0)
 })
 
-test("a BigModel coding request is signed without changing its model", async () => {
+test("BigModel coding models gain opt-in Signed aliases", async () => {
+  const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
+  const models = await hooks.provider.models({ models: {} }, { auth })
+  expect(models["GLM-5.3-Signed"]).toMatchObject({ id: "GLM-5.3-Signed" })
+})
+
+test("a Signed alias strips its suffix and signs without fallback", async () => {
   const realPlansOf = _internal.plansOf
   _internal.plansOf = async () => ({ start: false, gift: null })
-  const res = await send("GLM-5.3")
+  const res = await send("GLM-5.3-Signed")
   expect(res.status).toBe(200)
   expect(sent).toHaveLength(1)
   expect(JSON.parse(sent[0].init.body).model).toBe("GLM-5.3")
@@ -81,7 +89,7 @@ test("a failed BigModel sign handshake never sends an unsigned coding request", 
     sent.push({ input: String(input), init, headers: new Headers(init?.headers) })
     return new Response(JSON.stringify({ ok: true }))
   }
-  await expect(send("GLM-5.3")).rejects.toThrow("BigModel sign handshake")
+  await expect(send("GLM-5.3-Signed")).rejects.toThrow("BigModel sign handshake")
   expect(sent).toHaveLength(0)
   _internal.plansOf = realPlansOf
 })

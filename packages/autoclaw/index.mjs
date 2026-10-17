@@ -27,8 +27,8 @@ const APP_ID = "100003";
 const APP_KEY = "38d2391985e2369a5fb8227d8e6cd5e5";
 const PRODUCT = "autoclaw";
 const CHANNEL = "AutoClaw4";
-const CLIENT_VERSION = "1.18.1"
-const CN_CHANNEL = "AutoClaw26"
+const CLIENT_VERSION = "1.18.1";
+const CN_CHANNEL = "AutoClaw26";
 const CN_CLIENT_VERSION = "2.1.0";
 const PLATFORM_TM = process.platform === "darwin" ? "mac" : process.platform === "win32" ? "win" : "linux";
 const USER_AGENT = `AutoClaw/${CLIENT_VERSION} (${PLATFORM_TM}-${process.arch})`;
@@ -47,15 +47,35 @@ const FALLBACK_EXPIRES_IN_S = 5 * 3600;
 /** 本地 OAuth 会话上限：callback 的等待是 5 分钟；宿主不调 callback 时兜底释放端口。 */
 const OAUTH_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 
+const VARIANTS = Object.fromEntries(["low", "high", "max"].map((effort) => [effort, { reasoningEffort: effort }]));
+
 /** 模型清单：键 = magpie 里显示的 id；值里的 id = 上游接受的 routeModelId。 */
-function autoclawModels() {
-  // AutoClaw's live managed-model catalog currently lists these four only.
+function overseasModels() {
+  // Keep the historical third-party catalog: this PR only verifies the CN
+  // managed gateway and must not change the overseas provider's catalog.
   return {
-    "zai_auto": { name: "Auto", id: "zai_auto", limit: { context: 1048576, output: 393216 }, reasoning: true, attachment: true, tool_call: true, variants: ["low", "high", "max"] },
-    "zai_auto-fast": { name: "Auto-Fast", id: "zai_auto-fast", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: ["low", "high", "max"] },
-    "zaicoding_glm-5.3": { name: "GLM-5.3", id: "zaicoding_glm-5.3", limit: { context: 1048576, output: 307200 }, reasoning: true, attachment: false, tool_call: true, variants: ["low", "high", "max"] },
-    "zai_glm-5.3-flash": { name: "GLM-5.3-Flash", id: "zai_glm-5.3-flash", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: ["low", "high", "max"] },
+    "zai_auto": { name: "GLM Auto (路由)", id: "zai_auto", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
+    "zai_auto-fast": { name: "GLM Auto Fast", id: "zai_auto-fast", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
+    "zai_glm-5.3-flash": { name: "GLM-5.3 Flash", id: "zai_glm-5.3-flash", limit: { context: 1000000, output: 32000 }, reasoning: true, tool_call: true },
+    "zai_glm-5-turbo": { name: "GLM-5 Turbo", id: "zai_glm-5-turbo", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
+    "zaicoding_glm-5.3": { name: "GLM-5.3 Coding", id: "zaicoding_glm-5.3", limit: { context: 1000000, output: 131072 }, reasoning: true, tool_call: true },
+    "tdpsk_deepseek-v4-flash-202605": { name: "DeepSeek V4 Flash", id: "tdpsk_deepseek-v4-flash-202605", limit: { context: 1000000, output: 384000 }, reasoning: true, tool_call: true },
+    "tdpsk_deepseek-v4-pro-202606": { name: "DeepSeek V4 Pro", id: "tdpsk_deepseek-v4-pro-202606", limit: { context: 1000000, output: 384000 }, reasoning: true, tool_call: true },
   };
+}
+
+/** The CN live managed-model catalog, saved by AutoClaw 2.1.0. */
+function managedModels() {
+  return {
+    "zai_auto": { name: "Auto", id: "zai_auto", limit: { context: 1048576, output: 393216 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
+    "zai_auto-fast": { name: "Auto-Fast", id: "zai_auto-fast", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
+    "zaicoding_glm-5.3": { name: "GLM-5.3", id: "zaicoding_glm-5.3", limit: { context: 1048576, output: 307200 }, reasoning: true, attachment: false, tool_call: true, variants: VARIANTS },
+    "zai_glm-5.3-flash": { name: "GLM-5.3-Flash", id: "zai_glm-5.3-flash", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
+  };
+}
+
+function autoclawModels(providerId = "autoclaw") {
+  return providerId === "autoclaw-cn" ? managedModels() : overseasModels();
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +399,7 @@ function managedHeaders(token, model) {
   const rid = randomUUID();
   const headers = new Headers(bizHeaders());
   headers.set("Accept", "application/json");
+  headers.set("User-Agent", `AutoClaw/${CN_CLIENT_VERSION} (${PLATFORM_TM}-${process.arch})`);
   headers.set("X-Channel", CN_CHANNEL);
   headers.set("X-Version", CN_CLIENT_VERSION);
   headers.set("X-Trace-Id", rid);
@@ -403,7 +424,10 @@ function rewriteManagedBody(body) {
   if (first?.role === "system") {
     // Prefix inside the caller's existing system message avoids competing
     // system roles while satisfying the gateway's AutoClaw check.
-    payload.messages = [{ ...first, content: `${OFFICIAL_SYSTEM_PROMPT}\n\n${String(first.content ?? "")}` }, ...rest];
+    const content = Array.isArray(first.content)
+      ? [{ type: "text", text: OFFICIAL_SYSTEM_PROMPT }, ...first.content]
+      : `${OFFICIAL_SYSTEM_PROMPT}\n\n${String(first.content ?? "")}`;
+    payload.messages = [{ ...first, content }, ...rest];
   } else {
     payload.messages = [{ role: "system", content: OFFICIAL_SYSTEM_PROMPT }, ...messages];
   }
@@ -418,7 +442,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
         name: providerName,
         npm: "@ai-sdk/openai-compatible",
         api: homeHost,
-        models: autoclawModels(),
+        models: autoclawModels(providerId),
       };
     },
 
@@ -486,8 +510,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
             }
 
             // The CN managed gateway is the AutoClaw 2.1.0 account-points
-            // channel: it requires the client's system prefix, streaming, and
-            // rejects max_tokens. Preserve the caller's stream preference.
+            // channel. It requires the system prefix and rejects max_tokens.
             const { payload, model } = rewriteManagedBody(init?.body);
             const headers = managedHeaders(accessToken, model);
             const res = await fetch(MANAGED_HOST + CN_CHAT_PATH, {

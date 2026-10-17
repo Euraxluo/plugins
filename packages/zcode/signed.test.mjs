@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { homedir, tmpdir } from "node:os"
-import { mkdtempSync } from "node:fs"
-import { join } from "node:path"
 import { realpathSync } from "node:fs"
 import { ZCodeAuthPlugin, _internal } from "./index.mjs"
 import { createSigner, minePow } from "./sign.mjs"
+import { createCipheriv, createHmac } from "node:crypto"
 
 if (![tmpdir(), realpathSync(tmpdir())].some((t) => homedir().startsWith(t))) throw new Error("run in an isolated home")
 
@@ -13,9 +12,26 @@ const state = { site: "bigmodel", base: "https://open.bigmodel.cn/api/anthropic"
 const auth = { type: "oauth", access: KEY, refresh: JSON.stringify(state), expires: 0 }
 const sent = []
 const real = globalThis.fetch
+const realSignedFetch = async (input, init) => real(input, init)
+const DER = Buffer.from("MC4CAQAwBQYDK2VwBCIEINaofm94EHDBFTX6XkGlMUU8F41qb2mXKe/DMwUJbxCh", "base64")
+
+function sealedKey() {
+  const secret = "secret"
+  const prk = createHmac("sha256", "WD_CLIENT_SIGN_KDF_SALT").update(secret).digest()
+  const key = createHmac("sha256", prk).update(Buffer.concat([Buffer.from("ed25519_priv"), Buffer.from([1])])).digest().subarray(0, 32)
+  const nonce = Buffer.alloc(12)
+  const cipher = createCipheriv("aes-256-gcm", key, nonce)
+  cipher.setAAD(Buffer.from("one"))
+  return Buffer.concat([nonce, cipher.update(Buffer.from(DER.toString("base64"))), cipher.final(), cipher.getAuthTag()]).toString("base64")
+}
 
 beforeEach(() => {
   sent.length = 0
+  _internal.signedSigners.clear()
+  _internal.signedFetchRef.impl = async () => new Response(JSON.stringify({
+    code: 200,
+    data: { privateCipher: sealedKey() },
+  }), { headers: { "content-type": "application/json" } })
   globalThis.fetch = async (input, init) => {
     sent.push({ input: String(input), init, headers: new Headers(init?.headers) })
     return new Response(JSON.stringify({ ok: true }))
@@ -24,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = real
+  _internal.signedFetchRef.impl = realSignedFetch
 })
 
 async function send(model) {
@@ -40,20 +57,18 @@ test("PoW follows glmsign's first-byte rule", () => {
   expect(Number(cand)).toBeGreaterThanOrEqual(0)
 })
 
-test("BigModel coding models gain opt-in Signed aliases", async () => {
-  const hooks = await ZCodeAuthPlugin({ client: { auth: { set: async () => {} } } })
-  const models = await hooks.provider.models({ models: {} }, { auth })
-  expect(models["GLM-5.3-Signed"]).toMatchObject({ id: "GLM-5.3-Signed" })
-})
-
-test("a Signed alias strips its suffix and sends the normal coding key", async () => {
+test("a BigModel coding request is signed without changing its model", async () => {
   const realPlansOf = _internal.plansOf
   _internal.plansOf = async () => ({ start: false, gift: null })
-  const res = await send("GLM-5.3-Signed")
+  const res = await send("GLM-5.3")
   expect(res.status).toBe(200)
   expect(sent).toHaveLength(1)
   expect(JSON.parse(sent[0].init.body).model).toBe("GLM-5.3")
   expect(sent[0].headers.get("x-api-key")).toBe(KEY)
   expect(sent[0].headers.get("authorization")).toBe("Bearer " + KEY)
+  expect(sent[0].headers.get("x-app-id")).toBe("zcode")
+  expect(sent[0].headers.get("x-client-version")).toBe("3.4.0")
+  expect(sent[0].headers.get("x-client-sig")).toBeTruthy()
+  expect(sent[0].headers.get("x-client-pow")).toBeTruthy()
   _internal.plansOf = realPlansOf
 })

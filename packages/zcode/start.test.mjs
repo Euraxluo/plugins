@@ -305,7 +305,11 @@ const sentAsIs = (r, key, path) => {
 test("a GLM Coding Plan key's request goes as the agent sent it", async () => {
   sentAsIs(await send({ type: "api", key: "one.secret", metadata: { site: "zai" } }, agentText), "one.secret", "/api.z.ai/api/anthropic/v1/messages")
   got.length = 0
-  sentAsIs(await send({ type: "api", key: "two.secret", metadata: { site: "bigmodel" } }, agentText, { url: "https://open.bigmodel.cn/api/anthropic/v1/messages" }), "two.secret", "/open.bigmodel.cn/api/anthropic/v1/messages")
+  const r = await send({ type: "api", key: "two.secret", metadata: { site: "bigmodel" } }, agentText, { url: "https://open.bigmodel.cn/api/anthropic/v1/messages" })
+  expect(r.path).toBe("/open.bigmodel.cn/api/anthropic/v1/messages")
+  expect(r.body).toBe(agentText)
+  expect(r.headers.authorization).toBe("Bearer two.secret")
+  expect(r.headers["x-api-key"]).toBe("two.secret")
 })
 
 test("a team seat's request goes as the agent sent it, ZCode's token or not", async () => {

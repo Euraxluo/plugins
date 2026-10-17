@@ -236,15 +236,15 @@ async function plansOf(s) {
 const blocked = new Map()
 
 const signedSigners = new Map()
+const signedFetchRef = { impl: async () => { throw new Error("BigModel sign handshake failed") } }
 const signedChannel = (key) => {
   let s = signedSigners.get(key)
   if (!s) {
-    s = createSigner({ apiKey: key })
+    s = createSigner({ apiKey: key, fetchImpl: (...args) => signedFetchRef.impl(...args) })
     signedSigners.set(key, s)
   }
   return s
 }
-const SIGNED_SUFFIX = "-Signed"
 
 // giftServes: the gift's buckets name their models lowercased ("glm-5.3-
 // flash"); what is asked for arrives as the plan lists it ("GLM-5.3-Flash").
@@ -1583,12 +1583,6 @@ export async function ZCodeAuthPlugin({ client }) {
           if (out[id]) continue
           out[id] = model({ ...about(raw), id }, url)
         }
-        if (!start && siteOf(s.site) === "bigmodel") {
-          for (const m of ms) {
-            const id = m.id + SIGNED_SUFFIX
-            if (!out[id]) out[id] = model({ ...m, id }, url)
-          }
-        }
         if (fell) out[Symbol.for("magpie.fellBack")] = true
         return out
       },
@@ -1621,16 +1615,11 @@ export async function ZCodeAuthPlugin({ client }) {
             // a dual account's body is read ahead of sending, so a gift that
             // says it is spent can spend nothing and replay what was asked for
             let start = alone
-            let orig, forcedGift = false, signed = false
+            let orig, forcedGift = false
             if (opts.body != null) {
               orig = opts.body = typeof opts.body === "string" ? opts.body : await new Response(opts.body).text()
               delete opts.duplex
               let m = modelOf(orig)
-              let signed = m.toLowerCase().endsWith(SIGNED_SUFFIX.toLowerCase())
-              if (signed) {
-                orig = opts.body = JSON.stringify({ ...JSON.parse(orig), model: m.slice(0, -SIGNED_SUFFIX.length) })
-                m = modelOf(orig)
-              }
               if (m.toLowerCase().endsWith("-trial")) {
                 gift ??= await startPlan(s.jwt, s.device).catch(() => null)
                 const raw = giftModel(gift, m)
@@ -1655,11 +1644,9 @@ export async function ZCodeAuthPlugin({ client }) {
             }
             let h = new Headers(opts.headers)
             const place = workPlace(h)
+            const signed = !start && siteOf(s.site) === "bigmodel"
+            let signedHeadersApplied = false
             if (signed) {
-              if (siteOf(s.site) !== "bigmodel") {
-                const error = { type: "invalid_request_error", message: "The signed channel is for BigModel Coding Plan keys" }
-                return kept(new Response(JSON.stringify({ type: "error", error }), { status: 400, headers: { "content-type": "application/json" } }))
-              }
               if (!key) throw new Error("ZCode's sign-in has no key; sign in again")
               swap(BIGMODEL_BASE)
               h.delete("authorization")
@@ -1675,6 +1662,7 @@ export async function ZCodeAuthPlugin({ client }) {
                 hdr = null
               }
               if (hdr) for (const [k, v] of Object.entries(hdr)) h.set(k, v)
+              signedHeadersApplied = !!hdr
             } else if (start) {
               if (jwtExpired(s.jwt)) throw new Error(EXPIRED)
               if (!s.jwt) throw new Error("ZCode's sign-in has no key; sign in again")
@@ -1695,6 +1683,18 @@ export async function ZCodeAuthPlugin({ client }) {
               h.set("Authorization", "Bearer " + key)
             }
             let res = await fetch(url, { ...opts, headers: h })
+            if (signed && signedHeadersApplied && res.status === 401) {
+              const text = await res.text()
+              if (text.includes("VERIFY_SIGNATURE_INVALID") || text.includes("VERIFY_APIKEY_EXPIRED")) {
+                signedChannel(key).reset()
+                const sessionID = randomBytes(16).toString("hex")
+                try {
+                  const hdr = await signedChannel(key).headers(sessionID, modelOf(orig))
+                  if (hdr) for (const [k, v] of Object.entries(hdr)) h.set(k, v)
+                  res = await fetch(url, { ...opts, headers: h })
+                } catch { res = new Response(text, { status: 401, statusText: res.statusText, headers: res.headers }) }
+              } else res = new Response(text, { status: 401, statusText: res.statusText, headers: res.headers })
+            }
             // the Start Plan turning the request away says what to do about
             // it, as the built-in's zcodeStartExplain did
             if (start && res.status >= 400) {
@@ -1798,4 +1798,4 @@ export async function ZCodeAuthPlugin({ client }) {
 }
 
 // for tests
-export const _internal = { entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT }
+export const _internal = { entry, limitWindows, termOf, startUsage, routes, blocked, plansOf, giftOf, dualUsage, claimHint, spentUp, giftServes, modelOf, teamKeys, ownSignIn, stateOf, dress, PROMPT, signedSigners, signedFetchRef }

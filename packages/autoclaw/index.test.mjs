@@ -246,3 +246,100 @@ test("the OAuth callback takes only the state the authorize page handed out", as
     globalThis.fetch = realFetch
   }
 })
+
+test("CN's managed gateway gets AutoClaw's official body and headers", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), init, headers: new Headers(init?.headers) })
+    return Response.json({ id: "x", object: "chat.completion", created: 1, model: "zai_auto-fast", choices: [{ index: 0, message: { role: "assistant", content: "OK" }, finish_reason: "stop" }] })
+  }
+  try {
+    const factory = await makePlugin("autoclaw-cn")
+    const hooks = await factory({ client: { auth: { set: async () => {} } } }, {})
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const res = await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto-fast", stream: false, max_tokens: 12, stream_options: { include_usage: true }, messages: [{ role: "system", content: "mine" }, { role: "user", content: "hi" }] }) })
+    const sent = JSON.parse(calls[0].init.body)
+    expect(calls[0].url).toBe("https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw/chat/completions")
+    expect(sent.model).toBe("zai_auto-fast")
+    expect(sent.stream).toBe(false)
+    expect(sent.max_tokens).toBeUndefined()
+    expect(sent.messages).toHaveLength(2)
+    expect(sent.messages[0].content).toBe("You are AutoClaw. Answer the user directly and concisely.\n\nmine")
+    expect(sent.messages[0].role).toBe("system")
+    expect(sent.messages[1]).toMatchObject({ role: "user", content: "hi" })
+    expect(calls[0].headers.get("x-request-model")).toBe("zai_auto-fast")
+    expect(calls[0].headers.get("x-client-type")).toBe("pc")
+    expect(calls[0].headers.get("x-agent-id")).toBe("main")
+    expect(calls[0].headers.get("x-authorization")).toBe("Bearer a1")
+    expect(res.headers.get("content-type")).toContain("application/json")
+    const reply = await res.json()
+    expect(reply.model).toBe("zai_auto-fast")
+  } finally { globalThis.fetch = realFetch }
+})
+
+function makePlugin(id) {
+  return _internal.makePluginForTest({
+    providerId: id,
+    providerName: id,
+    homeHost: id === "autoclaw-cn" ? "https://autoglm-api.zhipuai.cn" : "https://autoglm-api.autoglm.ai",
+    loginMethod: { type: "oauth", label: "test", authorize: async () => ({}) },
+  })
+}
+
+test("CN preserves string and array system content", async () => {
+  const realFetch = globalThis.fetch
+  const calls = []
+  globalThis.fetch = async (input, init) => {
+    calls.push(JSON.parse(String(init?.body)))
+    return Response.json({ ok: true })
+  }
+  try {
+    const factory = makePlugin("autoclaw-cn")
+    const hooks = await factory({ client: { auth: { set: async () => {} } } }, {})
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto", messages: [{ role: "system", content: [{ type: "text", text: "PARTSYS" }] }, { role: "user", content: "hi" }] }) })
+    expect(calls[0].messages[0].content).toEqual([
+      { type: "text", text: "You are AutoClaw. Answer the user directly and concisely." },
+      { type: "text", text: "PARTSYS" },
+    ])
+    await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto", messages: [{ role: "system", content: "mine" }, { role: "user", content: "hi" }] }) })
+    expect(calls[1].messages[0].content).toBe("You are AutoClaw. Answer the user directly and concisely.\n\nmine")
+  } finally { globalThis.fetch = realFetch }
+})
+
+test("CN's managed catalog uses variant objects and overseas keeps its catalog", async () => {
+  const factory = makePlugin("autoclaw-cn")
+  const cn = await factory({ client: { auth: { set: async () => {} } } }, {})
+  const cfg = { provider: {} }
+  await cn.config(cfg)
+  expect(Object.keys(cfg.provider["autoclaw-cn"].models.zai_auto.variants)).toEqual(["low", "high", "max"])
+  expect(cfg.provider["autoclaw-cn"].models.zai_auto.variants.max).toEqual({ reasoningEffort: "max" })
+  expect(Object.keys(cfg.provider["autoclaw-cn"].models)).toEqual(["zai_auto", "zai_auto-fast", "zaicoding_glm-5.3", "zai_glm-5.3-flash"])
+  const overseas = await makePlugin("autoclaw")({ client: { auth: { set: async () => {} } } }, {})
+  const oc = { provider: {} }
+  await overseas.config(oc)
+  expect(Object.keys(oc.provider.autoclaw.models)).toEqual(["zai_auto", "zai_auto-fast", "zai_glm-5.3-flash", "zai_glm-5-turbo", "zaicoding_glm-5.3", "tdpsk_deepseek-v4-flash-202605", "tdpsk_deepseek-v4-pro-202606"])
+})
+
+test("CN passes SSE through and marks 401 expired", async () => {
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.pathname.endsWith("/chat/completions")) {
+      if (String(init?.body).includes("STREAM")) return new Response("data: {\"ok\":true}\n\n", { headers: { "content-type": "text/event-stream" } })
+      return new Response("{}", { status: 401 })
+    }
+    return Response.json({ ok: true })
+  }
+  try {
+    const factory = makePlugin("autoclaw-cn")
+    const hooks = await factory({ client: { auth: { set: async () => {} } } }, {})
+    const loader = await hooks.auth.loader(async () => ({ type: "oauth", access: "a1" }))
+    const stream = await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto", stream: true, messages: [{ role: "user", content: "STREAM" }] }) })
+    expect(await stream.text()).toBe("data: {\"ok\":true}\n\n")
+    const expired = await loader.fetch("x", { body: JSON.stringify({ model: "zai_auto", messages: [{ role: "user", content: "x" }] }) })
+    expect(expired.status).toBe(401)
+    expect(expired.headers.get("X-Magpie-Sign-In")).toBe("expired")
+  } finally { globalThis.fetch = realFetch }
+})

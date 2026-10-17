@@ -27,6 +27,8 @@ const APP_KEY = "38d2391985e2369a5fb8227d8e6cd5e5";
 const PRODUCT = "autoclaw";
 const CHANNEL = "AutoClaw4";
 const CLIENT_VERSION = "1.18.1";
+const CN_CHANNEL = "AutoClaw26";
+const CN_CLIENT_VERSION = "2.1.0";
 const PLATFORM_TM = process.platform === "darwin" ? "mac" : process.platform === "win32" ? "win" : "linux";
 const USER_AGENT = `AutoClaw/${CLIENT_VERSION} (${PLATFORM_TM}-${process.arch})`;
 
@@ -34,6 +36,9 @@ const GLOBAL_HOST = "https://autoglm-api.autoglm.ai";
 const CN_HOST = "https://autoglm-api.zhipuai.cn";
 
 const CHAT_PATH = "/autoclaw-proxy/proxy/autoclaw/v1/chat/completions";
+const CN_CHAT_PATH = "/autoclaw-proxy/proxy/autoclaw/chat/completions";
+const MANAGED_HOST = "https://autoglm-acceleration-api.zhipuai.cn";
+const OFFICIAL_SYSTEM_PROMPT = 'You are AutoClaw. Answer the user directly and concisely.';
 const WALLETS_PATH = `/agent-assetmgr/api/v2/wallets?biz_app_id=${PRODUCT}`;
 
 const OAUTH_EXPIRY_SKEW_MS = 10 * 60 * 1000;
@@ -41,8 +46,12 @@ const FALLBACK_EXPIRES_IN_S = 5 * 3600;
 /** 本地 OAuth 会话上限：callback 的等待是 5 分钟；宿主不调 callback 时兜底释放端口。 */
 const OAUTH_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 
+const VARIANTS = Object.fromEntries(["low", "high", "max"].map((effort) => [effort, { reasoningEffort: effort }]));
+
 /** 模型清单：键 = magpie 里显示的 id；值里的 id = 上游接受的 routeModelId。 */
-function autoclawModels() {
+function overseasModels() {
+  // Keep the historical third-party catalog: this PR only verifies the CN
+  // managed gateway and must not change the overseas provider's catalog.
   return {
     "zai_auto": { name: "GLM Auto (路由)", id: "zai_auto", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
     "zai_auto-fast": { name: "GLM Auto Fast", id: "zai_auto-fast", limit: { context: 200000, output: 32000 }, reasoning: true, tool_call: true },
@@ -52,6 +61,20 @@ function autoclawModels() {
     "tdpsk_deepseek-v4-flash-202605": { name: "DeepSeek V4 Flash", id: "tdpsk_deepseek-v4-flash-202605", limit: { context: 1000000, output: 384000 }, reasoning: true, tool_call: true },
     "tdpsk_deepseek-v4-pro-202606": { name: "DeepSeek V4 Pro", id: "tdpsk_deepseek-v4-pro-202606", limit: { context: 1000000, output: 384000 }, reasoning: true, tool_call: true },
   };
+}
+
+/** The CN live managed-model catalog, saved by AutoClaw 2.1.0. */
+function managedModels() {
+  return {
+    "zai_auto": { name: "Auto", id: "zai_auto", limit: { context: 1048576, output: 393216 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
+    "zai_auto-fast": { name: "Auto-Fast", id: "zai_auto-fast", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
+    "zaicoding_glm-5.3": { name: "GLM-5.3", id: "zaicoding_glm-5.3", limit: { context: 1048576, output: 307200 }, reasoning: true, attachment: false, tool_call: true, variants: VARIANTS },
+    "zai_glm-5.3-flash": { name: "GLM-5.3-Flash", id: "zai_glm-5.3-flash", limit: { context: 1048576, output: 131072 }, reasoning: true, attachment: true, tool_call: true, variants: VARIANTS },
+  };
+}
+
+function autoclawModels(providerId = "autoclaw") {
+  return providerId === "autoclaw-cn" ? managedModels() : overseasModels();
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +393,46 @@ async function refreshTokens(refreshToken, preferredHosts) {
 // 插件工厂
 // ---------------------------------------------------------------------------
 
+function managedHeaders(token, model) {
+  const ts = String(Math.floor(Date.now() / 1000));
+  const rid = randomHex(16);
+  const headers = new Headers(bizHeaders());
+  headers.set("Accept", "application/json");
+  headers.set("User-Agent", `AutoClaw/${CN_CLIENT_VERSION} (${PLATFORM_TM}-${process.arch})`);
+  headers.set("X-Channel", CN_CHANNEL);
+  headers.set("X-Version", CN_CLIENT_VERSION);
+  headers.set("X-Trace-Id", rid);
+  headers.set("X-Request-Id", rid);
+  headers.set("X-Request-Model", model);
+  headers.set("X-Client-Type", "pc");
+  headers.set("x_trace_id", "autoclaw-desktop");
+  headers.set("X-Agent-Id", "main");
+  headers.set("X-Authorization", `Bearer ${bareToken(token)}`);
+  headers.delete("Authorization");
+  return headers;
+}
+
+function rewriteManagedBody(body) {
+  const payload = JSON.parse(String(body ?? "{}"));
+  const model = typeof payload.model === "string" ? payload.model : "zai_auto";
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  payload.model = model;
+  // The gateway rejects max_tokens, but accepts both streaming modes.
+  delete payload.max_tokens;
+  const [first, ...rest] = messages;
+  if (first?.role === "system") {
+    // Prefix inside the caller's existing system message avoids competing
+    // system roles while satisfying the gateway's AutoClaw check.
+    const content = Array.isArray(first.content)
+      ? [{ type: "text", text: OFFICIAL_SYSTEM_PROMPT }, ...first.content]
+      : `${OFFICIAL_SYSTEM_PROMPT}\n\n${String(first.content ?? "")}`;
+    payload.messages = [{ ...first, content }, ...rest];
+  } else {
+    payload.messages = [{ role: "system", content: OFFICIAL_SYSTEM_PROMPT }, ...messages];
+  }
+  return { payload, model };
+}
+
 function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod }) {
   return async ({ client }, options) => ({
     config: async (cfg) => {
@@ -378,7 +441,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
         name: providerName,
         npm: "@ai-sdk/openai-compatible",
         api: homeHost,
-        models: autoclawModels(),
+        models: autoclawModels(providerId),
       };
     },
 
@@ -412,40 +475,55 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
         return {
           baseURL: homeHost,
           async fetch(input, init) {
-            const headers = new Headers(init?.headers);
-            headers.set("X-Authorization", `Bearer ${accessToken}`);
-            headers.set("X-Client-Type", "pc");
-            headers.set("X-Product", PRODUCT);
-            headers.set("X-Harness-Type", "zcode");
-            headers.set("X-Tm", PLATFORM_TM);
-            headers.set("X-Version", CLIENT_VERSION);
-            headers.set("X-Lang", "zh-CN");
-            headers.set("X-Channel", CHANNEL);
-            headers.set("x_trace_id", "autoclaw-desktop");
-            headers.delete("Authorization");
-
-            let routeModel = "";
-            try {
-              const body = JSON.parse(String(init?.body ?? "{}"));
-              routeModel = String(body.model ?? "");
-            } catch { /* 保持空 */ }
-            if (routeModel) headers.set("X-Request-Model", routeModel);
-            headers.set("X-Request-Id", randomHex(16));
-
-            const tryFetch = (host) =>
-              fetch(`${host}${CHAT_PATH}`, { ...init, headers, signal: init?.signal });
-
-            const res1 = await tryFetch(hosts[0]);
-            if (res1.status !== 401 && res1.status !== 403) return res1;
-            const res2 = await tryFetch(hosts[1]);
-            if (res2.status === 401 || res2.status === 403) {
-              try { res2.body?.cancel?.(); } catch {}
-              return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
-                status: 401,
-                headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
-              });
+            if (providerId !== "autoclaw-cn") {
+              const headers = new Headers(init?.headers);
+              headers.set("X-Authorization", `Bearer ${accessToken}`);
+              headers.set("X-Client-Type", "pc");
+              headers.set("X-Product", PRODUCT);
+              headers.set("X-Harness-Type", "zcode");
+              headers.set("X-Tm", PLATFORM_TM);
+              headers.set("X-Version", CLIENT_VERSION);
+              headers.set("X-Lang", "zh-CN");
+              headers.set("X-Channel", CHANNEL);
+              headers.set("x_trace_id", "autoclaw-desktop");
+              headers.delete("Authorization");
+              let routeModel = "";
+              try {
+                const body = JSON.parse(String(init?.body ?? "{}"));
+                routeModel = String(body.model ?? "");
+              } catch { /* 保持空 */ }
+              if (routeModel) headers.set("X-Request-Model", routeModel);
+              headers.set("X-Request-Id", randomHex(16));
+              const tryFetch = (host) => fetch(`${host}${CHAT_PATH}`, { ...init, headers, signal: init?.signal });
+              const res1 = await tryFetch(hosts[0]);
+              if (res1.status !== 401 && res1.status !== 403) return res1;
+              const res2 = await tryFetch(hosts[1]);
+              if (res2.status === 401 || res2.status === 403) {
+                try { res2.body?.cancel?.(); } catch {}
+                return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效（两个 host 均拒绝该 token）", type: "invalid_request_error" } }), {
+                  status: 401,
+                  headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
+                });
+              }
+              return res2;
             }
-            return res2;
+
+            // The CN managed gateway is the AutoClaw 2.1.0 account-points
+            // channel. It requires the system prefix and rejects max_tokens.
+            const { payload, model } = rewriteManagedBody(init?.body);
+            const headers = managedHeaders(accessToken, model);
+            const res = await fetch(MANAGED_HOST + CN_CHAT_PATH, {
+              ...init,
+              method: "POST",
+              headers,
+              body: JSON.stringify(payload),
+            });
+            if (res.status !== 401 && res.status !== 403) return res;
+            try { res.body?.cancel?.(); } catch {}
+            return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效", type: "invalid_request_error" } }), {
+              status: 401,
+              headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
+            });
           },
         };
       },
@@ -1013,6 +1091,7 @@ export const AutoclawCnAuthPlugin = makeAutoclawPlugin({
 
 /** 测试辅助（magpie/OpenCode 不会把它当插件调用）。 */
 export const _internal = {
+  makePluginForTest: makeAutoclawPlugin,
   md5Hex, jwtClaim, tokenFields, codeValue, bizHeaders, bareToken, newDeviceId,
   dailySignin, signinStatus, maybeSignin, signinConfig, checkinOutcome, refreshTokens,
   fetchUserProfile, accountDisplayName, startLocalOAuth,

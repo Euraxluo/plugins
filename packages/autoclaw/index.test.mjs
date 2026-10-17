@@ -212,6 +212,8 @@ test("the OAuth callback takes only the state the authorize page handed out", as
   try {
     const session = await startLocalOAuth("google", () => {})
     const port = Number(/127\.0\.0\.1:(\d+)\//.exec(session.instructions)[1])
+    expect(session.url).toBe(`http://127.0.0.1:${port}/`)
+    expect((await realFetch(session.url)).status).toBe(200)
     const local = (path, init) => fetch(`http://127.0.0.1:${port}${path}`, init)
 
     // The guide page's Continue hands out the authorize URL, and the state in it

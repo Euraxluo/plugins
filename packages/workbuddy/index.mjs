@@ -1631,7 +1631,7 @@ function makePlugin(site) {
       refresh: (auth) => refreshed(site, auth),
       // the account's daily check-in: magpie can run it once a day per
       // account, when its WorkBuddy check-in switch is on; the button in
-      // Settings asks right away. Enterprise accounts aren't given one.
+      // Settings asks right away.
       async checkin(getAuth) {
         const auth = await getAuth()
         if (auth?.type !== "oauth" || !(auth.access || auth.source)) return { outcome: "failed", message: "not signed in" }

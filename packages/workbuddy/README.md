@@ -176,7 +176,9 @@ OpenCode's plugin API has no place for these.
 The account's daily credits are claimed through the billing meter. magpie
 can run it once a day per account when its WorkBuddy check-in switch is on;
 Settings → Usage → Plugins has that switch and a *Check in now* button.
-WorkBuddy AI tries the meter without `/v2` first and falls back to `/v2`;
-WorkBuddy (China) uses `/v2`. A reply saying the day was already claimed is
-`done`, and a transient billing failure is retried twice before the card
-shows the failure. Enterprise accounts have no daily check-in.
+The activity status is read first: inactive is `inactive`, a day already
+checked in is `done`, and only an active unchecked day is claimed. A claim
+that WorkBuddy answers 1001, 1002 or 1003 is `done`, `ineligible` or
+`inactive`. A claim turned away 401 while the account's credits still read
+is `ineligible`: that check-in takes WorkBuddy's own app. A transient
+billing failure is retried twice before the card shows the failure.

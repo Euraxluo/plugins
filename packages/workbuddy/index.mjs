@@ -1197,10 +1197,16 @@ async function unanswered(site, a, body, err, signal) {
 // the same: WorkBuddy's message, else its code, else the HTTP status.
 async function meter(site, a, path, body = {}) {
   const res = await meterAsked(site, a, path, body)
+  const raw = await res.text()
   let env = {}
   try {
-    env = JSON.parse(await res.text()) ?? {}
+    env = JSON.parse(raw) ?? {}
   } catch {}
+  let unreadable = ""
+  if (res.ok) { try { JSON.parse(raw) } catch { unreadable = raw.trim().slice(0, 120) || "(empty)" } }
+  if (unreadable) {
+    throw Object.assign(new Error(`unreadable reply ${unreadable}`), { status: res.status, code: 0, unreadable: true })
+  }
   const code = Number.parseInt(env.code, 10) || 0
   const err = (message) => Object.assign(new Error(message), { status: res.status, code })
   if (!res.ok) {
@@ -1212,19 +1218,16 @@ async function meter(site, a, path, body = {}) {
   return env.data ?? null
 }
 
-// alreadyCheckin is WorkBuddy's idempotent refusal of a day already claimed:
-// a business-code reply whose words say so, never a network or parse error.
-function alreadyCheckin(e) {
-  return typeof e?.status === "number" && /已签到|already/i.test(String(e?.message ?? ""))
-}
-
 // checkinOf claims the account's daily credits. China has the /v2 meter;
-// WorkBuddy AI first asks without it and falls back on 404, as its own
-// client does. Transient upstream failures are asked again twice (the same
-// bounded retry quota-hub observed on the billing endpoint; callers may
-// shorten the waits for a test).
+// after the activity status names an active, unchecked day. Transient
+// upstream failures are asked again twice (the bounded retry quota-hub
+// observed on the billing endpoint; callers may shorten the waits for a
+// test).
 async function checkinOf(site, a, { waits = [0, 0] } = {}) {
-  const paths = site.ai ? ["/billing/meter/daily-checkin", "/v2/billing/meter/daily-checkin"] : ["/v2/billing/meter/daily-checkin"]
+  const status = await meter(site, a, "/v2/billing/meter/checkin-activity-status")
+  if (!status?.active) return { outcome: "inactive" }
+  if (status.todayCheckedIn) return { outcome: "done" }
+  const paths = ["/v2/billing/meter/daily-checkin"]
   for (let attempt = 0; ; attempt++) {
     let i = 0
     while (i < paths.length) {
@@ -1232,8 +1235,18 @@ async function checkinOf(site, a, { waits = [0, 0] } = {}) {
         await meter(site, a, paths[i++])
         return { outcome: "claimed" }
       } catch (e) {
-        if (e?.status === 404 && i < paths.length) continue
-        if (alreadyCheckin(e)) return { outcome: "done" }
+        if (e?.code === 1001) return { outcome: "done" }
+        if (e?.code === 1002) return { outcome: "ineligible", message: e.message }
+        if (e?.code === 1003) return { outcome: "inactive", message: e.message }
+        if (e?.status === 401) {
+          try {
+            await meter(site, a, "/billing/meter/get-user-resource-summary")
+          } catch {
+            throw e
+          }
+          return { outcome: "ineligible", message: "WorkBuddy's check-in takes WorkBuddy's own app" }
+        }
+        if (e?.unreadable) return { outcome: "failed", message: `check-in: ${e.message}` }
         const transient = e?.status >= 500 || e?.code === 10000
         if (transient && attempt < waits.length) {
           await new Promise((r) => setTimeout(r, waits[attempt]))

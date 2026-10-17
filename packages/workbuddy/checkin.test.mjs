@@ -35,11 +35,15 @@ function serve(routes) {
   return calls
 }
 
-test("China claims through /v2 and signs as the billing account", async () => {
-  const calls = serve({ "/v2/billing/meter/daily-checkin": () => ok() })
+test("China asks the activity status, then claims through /v2", async () => {
+  const calls = serve({
+    "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, todayCheckedIn: false }),
+    "/v2/billing/meter/daily-checkin": () => ok(),
+  })
   const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
   expect(await checkinOf(WorkBuddyAuthPlugin, auth)).toEqual({ outcome: "claimed" })
-  const c = calls[0]
+  expect(calls.map((c) => c.url.pathname)).toEqual(["/v2/billing/meter/checkin-activity-status", "/v2/billing/meter/daily-checkin"])
+  const c = calls[1]
   expect(c.init.method).toBe("POST")
   expect(c.init.body).toBe("{}")
   expect(c.headers.get("authorization")).toBe("Bearer at")
@@ -47,22 +51,59 @@ test("China claims through /v2 and signs as the billing account", async () => {
   expect(c.headers.get("user-agent")).toBe("WorkBuddy/5.5.6")
 })
 
-test("an already-claimed day is done", async () => {
-  serve({ "/v2/billing/meter/daily-checkin": () => business(14001, "今日已签到") })
+test("the activity status already claimed is done without another claim", async () => {
+  const calls = serve({ "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, todayCheckedIn: true }) })
   const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
   expect(await checkinOf(WorkBuddyAuthPlugin, auth)).toEqual({ outcome: "done" })
+  expect(calls).toHaveLength(1)
 })
 
-test("WorkBuddy AI falls back from the meter without /v2 on 404", async () => {
-  const calls = serve({ "/v2/billing/meter/daily-checkin": () => ok() })
-  const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "www.codebuddy.ai" }
-  expect(await checkinOf(WorkBuddyAIAuthPlugin, auth)).toEqual({ outcome: "claimed" })
-  expect(calls.map((c) => c.url.pathname)).toEqual(["/billing/meter/daily-checkin", "/v2/billing/meter/daily-checkin"])
+test("an inactive activity is inactive", async () => {
+  const calls = serve({ "/v2/billing/meter/checkin-activity-status": () => ok({ active: false, todayCheckedIn: false }) })
+  const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
+  expect(await checkinOf(WorkBuddyAuthPlugin, auth)).toEqual({ outcome: "inactive" })
+  expect(calls).toHaveLength(1)
+})
+
+test("WorkBuddy's already, ineligible and ended codes are distinct", async () => {
+  const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
+  for (const [code, expected] of [[1001, { outcome: "done" }], [1002, { outcome: "ineligible", message: "not eligible" }], [1003, { outcome: "inactive", message: "event over" }]]) {
+    serve({
+      "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, todayCheckedIn: false }),
+      "/v2/billing/meter/daily-checkin": () => business(code, code === 1001 ? "already" : code === 1002 ? "not eligible" : "event over"),
+    })
+    expect(await checkinOf(WorkBuddyAuthPlugin, auth)).toEqual(expected)
+  }
+})
+
+test("a claim 401 while credits still read points to WorkBuddy's own app", async () => {
+  const calls = serve({
+    "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, todayCheckedIn: false }),
+    "/v2/billing/meter/daily-checkin": () => new Response("", { status: 401 }),
+    "/billing/meter/get-user-resource-summary": () => ok({}),
+  })
+  const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
+  expect(await checkinOf(WorkBuddyAuthPlugin, auth)).toEqual({ outcome: "ineligible", message: "WorkBuddy's check-in takes WorkBuddy's own app" })
+  expect(calls).toHaveLength(3)
+})
+
+test("an unreadable reply is failed, never claimed", async () => {
+  serve({
+    "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, todayCheckedIn: false }),
+    "/v2/billing/meter/daily-checkin": () => new Response("<html>"),
+  })
+  const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
+  const out = await checkinOf(WorkBuddyAuthPlugin, auth)
+  expect(out.outcome).toBe("failed")
+  expect(out.message).toContain("unreadable")
 })
 
 test("a transient billing failure retries twice, then reports failure", async () => {
   let calls = 0
-  serve({ "/v2/billing/meter/daily-checkin": () => { calls++; return business(10000, "API request failed with status code: 500") } })
+  serve({
+    "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, todayCheckedIn: false }),
+    "/v2/billing/meter/daily-checkin": () => { calls++; return business(10000, "API request failed with status code: 500") },
+  })
   const auth = { type: "oauth", access: "at", refresh: "r", expires: later(), uid: "u", domain: "" }
   const out = await checkinOf(WorkBuddyAuthPlugin, auth)
   expect(out.outcome).toBe("failed")
@@ -73,6 +114,7 @@ test("a token near its end is renewed before the claim", async () => {
   const sets = []
   const calls = serve({
     "/v2/plugin/auth/token/refresh": () => ok({ accessToken: "new", refreshToken: "r2", expiresIn: 3600 }),
+    "/v2/billing/meter/checkin-activity-status": () => ok({ active: true, todayCheckedIn: false }),
     "/v2/billing/meter/daily-checkin": () => ok(),
   })
   const auth = { type: "oauth", access: "old", refresh: "r", expires: Date.now() + 60_000, uid: "u", domain: "" }

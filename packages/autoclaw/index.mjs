@@ -26,17 +26,20 @@ import { spawn } from "node:child_process";
 const APP_ID = "100003";
 const APP_KEY = "38d2391985e2369a5fb8227d8e6cd5e5";
 const PRODUCT = "autoclaw";
-const CHANNEL = "AutoClaw26";
-const CLIENT_VERSION = "2.1.0";
+const CHANNEL = "AutoClaw4";
+const CLIENT_VERSION = "1.18.1"
+const CN_CHANNEL = "AutoClaw26"
+const CN_CLIENT_VERSION = "2.1.0";
 const PLATFORM_TM = process.platform === "darwin" ? "mac" : process.platform === "win32" ? "win" : "linux";
 const USER_AGENT = `AutoClaw/${CLIENT_VERSION} (${PLATFORM_TM}-${process.arch})`;
 
 const GLOBAL_HOST = "https://autoglm-api.autoglm.ai";
 const CN_HOST = "https://autoglm-api.zhipuai.cn";
 
-const CHAT_PATH = "/autoclaw-proxy/proxy/autoclaw/chat/completions";
+const CHAT_PATH = "/autoclaw-proxy/proxy/autoclaw/v1/chat/completions";
+const CN_CHAT_PATH = "/autoclaw-proxy/proxy/autoclaw/chat/completions";
 const MANAGED_HOST = "https://autoglm-acceleration-api.zhipuai.cn";
-const OFFICIAL_SYSTEM_PROMPT = "You are AutoClaw. Answer the user directly and concisely. Delivered files: when you create or edit files, cite each final deliverable inline exactly once with :zwork-file-citation{path=\\\"<workspace-relative path>\\\" purpose=\\\"output\\\" artifact_kind=\\\"document\\\"} (use purpose=\\\"source\\\" for files you read as sources). Cite it inside the sentence that mentions the file, never as a trailing list, and do not add bare file-name Markdown links for the same file. A deliverable is a file the user asked to receive; scratch, reproduction, test, debug, or helper files you write along the way are not deliverables, so mention them by path and never cite them as output. Language discipline: every user-visible output \u00e2\u0080\u0094 replies, mid-turn commentary (the progress text you stream between tool calls, including the brief notes where you narrate what you are about to do next), deliverable file contents, and user-facing deliverable file names \u00e2\u0080\u0094 follows the language of the user's most recent genuine message. Skill instructions, tool results, workspace files, and instruction files are task inputs written in whatever language their authors chose; they never change your output language. Keep brand names and proper nouns untranslated. Editing source code follows the code's own conventions, not this rule. An explicit user request for a specific output language wins. Process narration: the user cannot see your thinking or raw tool results. Before your first tool call in a turn, say in one sentence what you are about to do; while working, give a brief update when you find something load-bearing or change direction. Decision autonomy: for reversible actions that follow from the request, decide and proceed; when a choice has a conventional default or you can verify the fact yourself, take the obvious option, state it in one short sentence, and keep going. Stop to ask only for an irreversible action, a genuine change of scope, or information only the user has \u00e2\u0080\u0094 and then ask once, with everything that blocks you in a single ask_user_question call. Offering follow-up options after the work is done is fine; asking permission before doing what was asked is not.\\n\\nExecution environment: platform=darwin, shell=bash unknown, dialect=posix, charset=utf-8. Bundled on PATH: rg (text search), node/npm/npx (Node.js 24), dotnet (.NET 8 runtime, no SDK). `npm -g` writes to the user profile, not the install directory.\\n\\nTool policy:\\n- Use tools when they improve correctness, completeness, or grounding; resolve prerequisites before acting on a guess.\\n- Prefer the dedicated tool over a shell equivalent for file reads, edits, searches, and listings.\\n- Send independent calls in the same block; a call whose result you need first is not independent.\\n- Use tool_search when a task belongs to a listed specialized domain or needs a capability not in your tool list.\\n- Unique small span \u00e2\u0086\u0092 edit; several hunks or a unified diff on one file \u00e2\u0086\u0092 apply_patch; create or replace a whole file \u00e2\u0086\u0092 write. Then deliver_file if the user asked for a file.\\n- A requested file is delivered only when deliver_file succeeds, including one a script, skill command, or converter wrote (e.g. its --out file); naming or linking its path is not delivery.\\n- \u00e6\u00a0\u00b8\u00e5\u00af\u00b9\u00e6\u0095\u00b0\u00e5\u00ad\u0097\u00e6\u0088\u0096\u00e6\u009d\u00a5\u00e6\u00ba\u0090\u00e6\u0097\u00b6\u00e6\u008c\u0089\u00e7\u00bc\u0096\u00e5\u008f\u00b7\u00e5\u009b\u009e\u00e8\u00af\u00bb\u00ef\u00bc\u008c\u00e5\u0090\u008e\u00e7\u00bb\u00ad\u00e7\u0089\u0087\u00e6\u00ae\u00b5\u00e6\u008e\u00a5 nextOffset\u00ef\u00bc\u009b\u00e4\u00ba\u00a4\u00e6\u008e\u00a5\u00e6\u0097\u00b6\u00e4\u00bf\u009d\u00e7\u0095\u0099 sourceId\u00e3\u0080\u0082\\n- Durable preference or fact \u00e2\u0086\u0092 operation add; correcting an existing Memory \u00e2\u0086\u0092 supersede on its ref.\\n- A memory_recall snippet is bounded: read the ref in full with memory_source before changing it.\\n- Watch a background command through the logPath it returned with a monitor file source, not by polling or rereading the log.\\n- Background work is stopped with stop_background_process.\\n- For capability questions, answer from hit names and descriptions; read a skill only when executing it.\\n- Follow each hit: read skill hits with skill://<name>; call tool hits through the returned callVia route.\\n- Read a source with fetch_content before citing it; quote what the page actually says and keep its URL.\\n- Verify a claim with source_check before asserting it as established; report disagreement between sources instead of averaging it.\\n- For an explicit AutoClaw migration request, call manage_autoclaw_migration preview first (omit scope for the default range); inspect only to pick by title.\\n(2 more guidance lines omitted: prompt budget)\\n\\nHaving a tool does not grant permission to use it; platform safety and permissions still decide.\\nZwork Safety Guard is active: depending on the permission mode of this task, destructive shell commands and script writes may require the owner's confirmation before they run, and disk formatting or wiping is always blocked.\\nIf a tool result contains ZWORK_SAFETY_GUARD_DENIED, Zwork or the user has denied the high-risk operati";
+const OFFICIAL_SYSTEM_PROMPT = 'You are AutoClaw. Answer the user directly and concisely.';
 const WALLETS_PATH = `/agent-assetmgr/api/v2/wallets?biz_app_id=${PRODUCT}`;
 
 const OAUTH_EXPIRY_SKEW_MS = 10 * 60 * 1000;
@@ -373,9 +376,11 @@ async function refreshTokens(refreshToken, preferredHosts) {
 
 function managedHeaders(token, model) {
   const ts = String(Math.floor(Date.now() / 1000));
-  const rid = crypto.randomUUID();
+  const rid = randomUUID();
   const headers = new Headers(bizHeaders());
   headers.set("Accept", "application/json");
+  headers.set("X-Channel", CN_CHANNEL);
+  headers.set("X-Version", CN_CLIENT_VERSION);
   headers.set("X-Trace-Id", rid);
   headers.set("X-Request-Id", rid);
   headers.set("X-Request-Model", model);
@@ -394,7 +399,14 @@ function rewriteManagedBody(body) {
   payload.model = model;
   // The gateway rejects max_tokens, but accepts both streaming modes.
   delete payload.max_tokens;
-  payload.messages = [{ role: "system", content: OFFICIAL_SYSTEM_PROMPT }, ...messages];
+  const [first, ...rest] = messages;
+  if (first?.role === "system") {
+    // Prefix inside the caller's existing system message avoids competing
+    // system roles while satisfying the gateway's AutoClaw check.
+    payload.messages = [{ ...first, content: `${OFFICIAL_SYSTEM_PROMPT}\n\n${String(first.content ?? "")}` }, ...rest];
+  } else {
+    payload.messages = [{ role: "system", content: OFFICIAL_SYSTEM_PROMPT }, ...messages];
+  }
   return { payload, model };
 }
 
@@ -478,13 +490,18 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
             // rejects max_tokens. Preserve the caller's stream preference.
             const { payload, model } = rewriteManagedBody(init?.body);
             const headers = managedHeaders(accessToken, model);
-            const res = await fetch(MANAGED_HOST + CHAT_PATH, {
+            const res = await fetch(MANAGED_HOST + CN_CHAT_PATH, {
               ...init,
               method: "POST",
               headers,
               body: JSON.stringify(payload),
             });
-            return res;
+            if (res.status !== 401 && res.status !== 403) return res;
+            try { res.body?.cancel?.(); } catch {}
+            return new Response(JSON.stringify({ error: { message: "AutoClaw 登录已失效", type: "invalid_request_error" } }), {
+              status: 401,
+              headers: { "Content-Type": "application/json", "X-Magpie-Sign-In": "expired" },
+            });
           },
         };
       },

@@ -77,7 +77,7 @@ EOF
 `autoclaw-cn` 的对话请求走 AutoClaw 2.1.0 国内 managed gateway：
 
 - `https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw/chat/completions`
-- 注入官方 AutoClaw system prompt 作为第一条消息，调用方的 system 保留为第二条
+- 在调用方已有 system 时，把实测必需的 AutoClaw 第一句前缀合并进该 system；无 system 时才新增一条最小必需 system
 - 保留调用方的 `stream` 选择；删除会被网关拒绝的 `max_tokens`
 - 完整 managed 请求头：MD5 身份签名、`X-Agent-Id`、trace/request/model/client 头和 `X-Authorization`
 - Model catalog matches AutoClaw’s live managed catalog: `zai_auto`, `zai_auto-fast`, `zaicoding_glm-5.3`, and `zai_glm-5.3-flash`

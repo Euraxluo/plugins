@@ -97,7 +97,7 @@ test("loader().fetch signs with X-Authorization and rotates hosts on 401", async
 
     // The chat path goes to the upstream, signed by X-Authorization, not Authorization
     await loader.fetch("x", { headers: { Authorization: "Bearer old" } })
-    expect(calls.at(-1).url).toBe("https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw/chat/completions")
+    expect(calls.at(-1).url).toBe("https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw/v1/chat/completions")
     expect(calls.at(-1).headers.get("X-Authorization")).toBe("Bearer a1")
     expect(calls.at(-1).headers.get("Authorization")).toBe(null)
 
@@ -262,7 +262,10 @@ test("CN's managed gateway gets AutoClaw's official body and headers", async () 
     expect(sent.model).toBe("zai_auto-fast")
     expect(sent.stream).toBe(false)
     expect(sent.max_tokens).toBeUndefined()
-    expect(sent.messages.slice(0, 2).map((m) => m.content)).toEqual([expect.any(String), "mine"])
+    expect(sent.messages).toHaveLength(2)
+    expect(sent.messages[0].content).toBe("You are AutoClaw. Answer the user directly and concisely.\n\nmine")
+    expect(sent.messages[0].role).toBe("system")
+    expect(sent.messages[1]).toMatchObject({ role: "user", content: "hi" })
     expect(calls[0].headers.get("x-request-model")).toBe("zai_auto-fast")
     expect(calls[0].headers.get("x-client-type")).toBe("pc")
     expect(calls[0].headers.get("x-agent-id")).toBe("main")

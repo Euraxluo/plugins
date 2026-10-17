@@ -78,8 +78,7 @@ EOF
 
 - `https://autoglm-acceleration-api.zhipuai.cn/autoclaw-proxy/proxy/autoclaw/chat/completions`
 - 注入官方 AutoClaw system prompt 作为第一条消息，调用方的 system 保留为第二条
-- 强制上游 `stream: true`，删除 `max_tokens` / `stream_options`
-- 调用方要求非流式时，将上游 SSE 聚合为 OpenAI chat completion
+- 保留调用方的 `stream` 选择；删除会被网关拒绝的 `max_tokens`
 - 完整 managed 请求头：MD5 身份签名、`X-Agent-Id`、trace/request/model/client 头和 `X-Authorization`
 - 模型 ID 保持调用方选择的值原样发送；所有官方目录模型均可使用
 

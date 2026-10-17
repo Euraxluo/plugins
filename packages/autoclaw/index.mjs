@@ -389,37 +389,13 @@ function managedHeaders(token, model) {
   return headers;
 }
 
-async function aggregateSSE(response, model) {
-  const text = await response.text();
-  let id = "", created = Math.floor(Date.now() / 1000), finish = "";
-  const content = [], reasoning = [];
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith("data:")) continue;
-    const data = line.slice(5).trim();
-    if (!data || data === "[DONE]") continue;
-    let chunk;
-    try { chunk = JSON.parse(data) } catch { continue }
-    if (chunk.id) id ||= chunk.id;
-    if (Number(chunk.created) > 0) created = Number(chunk.created);
-    for (const choice of chunk.choices ?? []) {
-      if (choice.delta?.content) content.push(choice.delta.content);
-      if (choice.delta?.reasoning_content) reasoning.push(choice.delta.reasoning_content);
-      if (choice.finish_reason) finish = String(choice.finish_reason);
-    }
-  }
-  const message = { role: "assistant", content: content.join("") };
-  if (reasoning.length) message.reasoning_content = reasoning.join("");
-  return Response.json({ id, object: "chat.completion", created, model, choices: [{ index: 0, message, finish_reason: finish }] });
-}
-
 function rewriteManagedBody(body) {
   const payload = JSON.parse(String(body ?? "{}"));
   const model = typeof payload.model === "string" ? payload.model : "zai_auto";
   const messages = Array.isArray(payload.messages) ? payload.messages : [];
   payload.model = model;
-  payload.stream = true;
+  // The gateway rejects max_tokens, but accepts both streaming modes.
   delete payload.max_tokens;
-  delete payload.stream_options;
   payload.messages = [{ role: "system", content: OFFICIAL_SYSTEM_PROMPT }, ...messages];
   return { payload, model };
 }
@@ -502,9 +478,6 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
             // The CN managed gateway is the AutoClaw 2.1.0 account-points
             // channel: it requires the client's system prefix, streaming, and
             // rejects max_tokens. Preserve the caller's stream preference.
-            const wantStream = (() => {
-              try { return JSON.parse(String(init?.body ?? "{}")).stream === true } catch { return false }
-            })()
             const { payload, model } = rewriteManagedBody(init?.body);
             const headers = managedHeaders(accessToken, model);
             const res = await fetch(MANAGED_HOST + CHAT_PATH, {
@@ -513,8 +486,7 @@ function makeAutoclawPlugin({ providerId, providerName, homeHost, loginMethod })
               headers,
               body: JSON.stringify(payload),
             });
-            if (!res.ok) return res;
-            return wantStream ? res : aggregateSSE(res, model);
+            return res;
           },
         };
       },

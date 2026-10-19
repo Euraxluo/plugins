@@ -1,0 +1,41 @@
+{
+  "name": "@magpie-community/opencode-deepseek-web-auth",
+  "version": "0.1.0",
+  "description": "OpenCode and Magpie provider plugin for DeepSeek Web (chat.deepseek.com) with R1 reasoning, V3 chat, search, vision, and native fast PoW solver",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "auth.mjs",
+    "pow.mjs",
+    "client.mjs",
+    "sse.mjs",
+    "conv.mjs",
+    "models.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "deepseek",
+    "deepseek-web",
+    "deepseek-r1",
+    "deepseek-v3"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magpie-community/plugins.git",
+    "directory": "packages/deepseek-web"
+  },
+  "scripts": {
+    "test": "node --test index.test.mjs"
+  },
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6IiBmaWxsPSIjNEQ2QkZGIi8+PHBhdGggZD0iTTcuNSAxMmMwLTIuNDkgMi4wMS00LjUgNC41LTQuNXMyLjQ0IDEuMTcgMy4zOCAyLjU4TDEzLjUgMTEuNWwtMi0xLTIgMiAyIDJoLTJ6IiBmaWxsPSIjZmZmIi8+PC9zdmc+",
+    "maxConcurrency": 5
+  }
+}

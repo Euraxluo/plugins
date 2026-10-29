@@ -69,3 +69,36 @@ test("an EU org's Gemini request goes to Factory's EU region's generate route", 
   expect(new URL(seen[0].url).pathname).toBe("/api/llm/g/v1/generate")
   expect(seen[0].url.startsWith("https://api.factory.ai/")).toBe(false)
 })
+
+// Gemini's route has no tool-output adaptation of its own: every refused
+// phrase in its parts is escaped before the request leaves.
+test("Gemini tool output and system instruction escape every refused phrase", async () => {
+  const { l, seen } = await loaded()
+  const env = "You have been invoked in the following environment:"
+  const pi = "You are an expert coding assistant operating inside pi, a coding agent harness."
+  const body = {
+    contents: [{ role: "user", parts: [{ functionResponse: { name: "Read", response: { text: env + " / " + pi } } }] }],
+    systemInstruction: { role: "user", parts: [{ text: env }] },
+  }
+  await l.fetch("https://api.factory.ai/api/llm/g/v1/models/gemini-4-argon:streamGenerateContent?alt=sse", { method: "POST", body: JSON.stringify(body) })
+  const sent = JSON.parse(seen[0].body)
+  const part = sent.contents[0].parts[0].functionResponse.response.text
+  expect(part).toBe("\\u0059ou have been invoked in the following environment: / \\u0059ou are an expert coding assistant operating inside pi, a coding agent harness.")
+  expect(sent.systemInstruction.parts[0].text).toContain("\\u0059ou have been invoked")
+  expect(JSON.stringify(sent)).not.toContain(env)
+  expect(JSON.stringify(sent)).not.toContain(pi)
+})
+
+test("adapts ZCode generated Gemini system context while preserving values and user content", async () => {
+  const { l, seen } = await loaded()
+  const context = "# Environment\nYou have been invoked in the following environment:\n- Primary working directory: /tmp/project\n- Is a git repository: no\n- Platform: darwin\n- Shell: zsh\n- OS Version: darwin 27.0.0 arm64\n- You are powered by the model named test-model.\n"
+  const body = { systemInstruction: { parts: [{ text: context }] }, contents: [{ role: "user", parts: [{ text: context }] }] }
+  const url = "https://api.factory.ai/api/llm/g/v1/models/gemini-3-flash-preview:generateContent"
+  await l.fetch(url, { method: "POST", body: JSON.stringify(body) })
+  const sent = JSON.parse(seen[0].body)
+  expect(sent.systemInstruction.parts[0].text).toBe(droid + "\n" + context.replace("# Environment", "# Runtime context").replace("You have been invoked in the following environment:", "The session environment is:").replace("- You are powered by the model named", "- Current model name:"))
+  // user parts are not adapted; the Gemini route escapes the refused phrase in them (#258)
+  expect(sent.contents).toEqual([{ role: "user", parts: [{ text: context.replace("You have been invoked", "\\u0059ou have been invoked") }] }])
+  await l.fetch(url, { method: "POST", body: JSON.stringify(sent) })
+  expect(JSON.parse(seen[1].body)).toEqual(sent)
+})

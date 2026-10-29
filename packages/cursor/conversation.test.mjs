@@ -20,7 +20,9 @@ http2.connect = (origin, ...rest) => {
 }
 afterAll(() => (http2.connect = connect))
 
-const jwt = (exp) => ["e30", Buffer.from(JSON.stringify({ exp })).toString("base64url"), "sig"].join(".")
+// a token of this file's own: another file's {exp} alone can be the same
+// token, and would find the endpoint and list kept for it
+const jwt = (exp) => ["e30", Buffer.from(JSON.stringify({ exp, sub: "conversation-" + Math.random() })).toString("base64url"), "sig"].join(".")
 let n = 0
 // a sign-in of its own, so no list or endpoint kept for another is used
 const fresh = () => ({ type: "oauth", access: jwt(Math.floor(Date.now() / 1000) + 7200 + ++n), refresh: "", expires: 0, accountId: "a@b.c" })
@@ -184,7 +186,7 @@ test("the tool catalog writes each tool as its CallDynamicTool call", () => {
   const s = _internal.catalog(tools)
   expect(s).not.toContain("<tool name=")
   for (const t of tools) {
-    expect(s).toContain(`<call>CallDynamicTool({"namespace":"magpie","toolName":"${t.name}","arguments":{...}})\n${t.description}\narguments schema: ${t.schemaText}\n</call>`)
+    expect(s).toContain(`<call>CallDynamicTool({"namespace":"tools","toolName":"${t.name}","arguments":{...}})\n${t.description}\narguments schema: ${t.schemaText}\n</call>`)
   }
   expect(_internal.catalog([])).toBe("")
 })

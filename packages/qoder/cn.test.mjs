@@ -73,12 +73,15 @@ test("the sign-in page is qoder.cn's, with Qoder CN's CLI client id and no redir
   for (const k of ["challenge", "nonce", "machine_id"]) expect(u.searchParams.get(k)).toBeTruthy()
 })
 
-test("qoder.com's sign-in is as it was", async () => {
+test("qoder.com's sign-in sends no redirect_uri, as Qoder's CLI does, so Qoder.app isn't handed the page (#276)", async () => {
   const flow = await (await QoderAuthPlugin({ client: store().client })).auth.methods[0].authorize()
   const u = new URL(flow.url)
   expect(u.origin + u.pathname).toBe("https://qoder.com/device/selectAccounts")
   expect(u.searchParams.get("client_id")).toBe("732aef47-9cf2-46a2-95fe-4cebb5d0d1fa")
-  expect(u.searchParams.get("redirect_uri")).toBe("qoder-app://")
+  expect(u.searchParams.get("challenge_method")).toBe("S256")
+  for (const k of ["challenge", "nonce", "machine_id"]) expect(u.searchParams.get(k)).toBeTruthy()
+  expect(u.searchParams.has("redirect_uri")).toBe(false)
+  expect(flow.url).not.toContain("qoder-app")
 })
 
 test("the sign-in polls openapi.qoder.com.cn until authorized, then makes a job token there", async () => {
@@ -170,7 +173,8 @@ const chatServer = (machines, refresh) => (at, { req, body, url }) => {
     const q = JSON.parse(_internal.decodeBody(body))
     expect(q.model_config.key).toBe("performance")
     expect(q.parameters.reasoning_effort).toBe("high")
-    expect(q.messages.at(-1)).toEqual({ role: "user", content: [{ type: "text", text: "你好" }] })
+    const said = [{ type: "text", text: "你好", cache_control: { type: "ephemeral" } }]
+    expect(q.messages.at(-1)).toEqual({ role: "user", content: said, contents: said })
     machines.push(req.headers.get("cosy-machineid"))
     return sse(
       { choices: [{ delta: { reasoning_content: "想想" } }] },
@@ -296,4 +300,44 @@ test("the config declares qoder-cn on its gateway, with the tiers Qoder CN's CLI
   expect(Object.keys(cfg.provider["qoder-cn"].models)).toEqual(["ultimate", "performance", "efficient", "lite"])
   expect(cfg.provider.qoder.api).toBe("https://api3.qoder.sh")
   expect(Object.keys(cfg.provider.qoder.models)).toContain("qmodel")
+})
+
+test("qoder-cn: a device sign-in names the card by the phone (review #487, E)", async () => {
+  toServer()
+  let polls = 0
+  route = (at) => {
+    if (at === OPENAPI + "/api/v1/deviceToken/poll")
+      return ++polls < 2 ? new Response("", { status: 404 }) : json({ token: "dt-p", refresh_token: "drt-p", user_id: "u-p" })
+    if (at === OPENAPI + "/api/v1/me/jobToken") return json({ token: "jt-p", refresh_token: "jrt-p", expires_in: 3_600_000 })
+    if (at === OPENAPI + "/api/v1/userinfo")
+      return json({ id: "u-p", name: "dsh13800138000", security_mobile: "13800138000" })
+    return new Response("", { status: 404 })
+  }
+  const hooks = await QoderCNAuthPlugin({ client: store().client })
+  const flow = await hooks.auth.methods[0].authorize()
+  const cred = await flow.callback()
+  // accountId stays main's computation (Qoder CN's uuid); the card's name is cardName
+  expect(cred.accountId).toBe("u-p")
+  expect(cred.phoneLabel).toBe("138****8000")
+  expect(cred.cardName).toBe("138****8000")
+})
+
+test("qoder-cn: a device sign-in with an email and a phone shows the email (review #487, round 5)", async () => {
+  toServer()
+  let polls = 0
+  route = (at) => {
+    if (at === OPENAPI + "/api/v1/deviceToken/poll")
+      return ++polls < 2 ? new Response("", { status: 404 }) : json({ token: "dt-e", refresh_token: "drt-e", user_id: "u-e" })
+    if (at === OPENAPI + "/api/v1/me/jobToken") return json({ token: "jt-e", refresh_token: "jrt-e", expires_in: 3_600_000 })
+    if (at === OPENAPI + "/api/v1/userinfo")
+      return json({ id: "u-e", email: "bob@example.com", name: "Bob", security_mobile: "13800138000" })
+    return new Response("", { status: 404 })
+  }
+  const hooks = await QoderCNAuthPlugin({ client: store().client })
+  const flow = await hooks.auth.methods[0].authorize()
+  const cred = await flow.callback()
+  // main names a device-only account by its email; the phone is the card's
+  expect(cred.accountId).toBe("bob@example.com")
+  expect(cred.cardName).toBe("bob@example.com")
+  expect(cred.phoneLabel).toBe("138****8000")
 })

@@ -6,8 +6,15 @@ OpenCode Zen's free models in magpie and OpenCode. Provider id:
 Since 2026-10-13 Zen's free tier answers 403 FreeTierError ("can only be
 used from within OpenCode") to a request that isn't OpenCode's. From
 0.1.6 the plugin sends a free-model request with exactly the headers
-OpenCode 1.19.0 sends to Zen, and a session id of OpenCode's own form.
-Older versions (0.1.1 on npm before it) get the 403: update the plugin.
+OpenCode sends to Zen, and a session id of OpenCode's own form. Older
+versions (0.1.1 on npm before it) get the 403: update the plugin.
+
+Since 2026-10-26 Zen's free tier answers `429 FreeUsageLimitError`
+("Free models work in OpenCode") to the User-Agent OpenCode 1.19.0 sent,
+which 0.1.6 to 0.1.15 sent on every request. From 0.1.16 the plugin
+sends OpenCode 2.0.25's headers (`opencode/latest/2.0.25/cli`, its
+session id under `x-session-affinity` and `x-session-id` too): update
+the plugin.
 
 ## Install
 
@@ -19,6 +26,11 @@ magpie plugin login opencode-zen-free
 ## Sign in
 
 Enter `public` in the key field. No personal API key is needed.
+
+Hosts supporting magpie's `keyless` and `single` auth metadata can enable
+this public identity without a key field and offer Sign in again instead
+of another account. Older hosts and OpenCode keep the public-key flow.
+Personal keys still belong to the built-in OpenCode Zen provider.
 
 Whatever is typed in the key field, the plugin signs in with the one
 shared `public` credential: a key made under your own OpenCode account
@@ -56,15 +68,33 @@ The agent's tools are preserved. Zen's models often call OpenCode's own
 tool names; such a call is given the agent's tool whose name differs only
 in case (`bash` to `Bash`), or else only in case and `_`/`-` (`todowrite`
 to `todo_write`, `webfetch` to `web_fetch`), when exactly one does. A
-call with no such tool (or with no name) is left out of the reply, and
-the reply's text says which name was left out; a turn whose every call
-was left out ends as an ordinary answer. Tools run in the agent.
+call of a tool the agent has no spelling of (`psh` beside `pwsh`, `bedit`)
+reaches the agent as the model called it, as with any other provider: the
+agent answers it with its own unknown-tool error, and the model corrects
+the name and goes on. Only a call with no name is left out, and the
+reply's text says so; a turn whose every call was left out ends as an
+ordinary answer. Tools run in the agent.
 
 Zen's free tier only answers a request that carries tools, so a request
 is sent with the five core OpenCode tools the agent doesn't declare
 itself (`bash`, `edit`, `glob`, `grep`, `read`), described as not
-available. A call of one of them the agent doesn't have is left out like
-any other.
+available. A call of one of them the agent doesn't have reaches the agent
+like any other.
+
+Zen's free tier also tells OpenCode's own requests by the environment
+block every OpenCode prompt ends with (`<env>`, a `Working directory:`
+line, `</env>`) in a system message. Another agent's request without one
+gets a small allowance a day and then `429 FreeUsageLimitError` ("Free
+models work in OpenCode") until 00:00 UTC, while OpenCode's go through.
+So a request whose system messages have no such block gets one added
+after the agent's own prompt (Anthropic `system` and Responses
+`instructions` likewise); a prompt that has one, as OpenCode's does, goes
+as it is. The block added is OpenCode's own, with the working directory
+the agent's prompt names (Codex's `<cwd>`, a `Working directory:` line,
+"the current working directory is ...") or the user's home folder when it
+names none. A fixed placeholder there is refused: since 2026-10-29 Zen
+answers `Working directory: unknown`, which 0.1.15 to 0.1.17 sent, with
+that 429 at once.
 
 Now and then Zen closes a streamed Chat Completions reply before its
 `[DONE]`. When the reply has said something and no tool call of it is

@@ -49,7 +49,7 @@ test("a Teams plan: its end, its day and week, the extra usage balance", async (
       { name: "1 day", used: 0, span: 86400, resetsAt: 1790841600 },
       { name: "7 days", used: 1, span: 604800, resetsAt: 1791100800 },
     ],
-    signIn: "kept",
+    signIn: "renewed",
   })
   expect(seen[0].url).toBe("https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus")
   expect(seen[0].headers).toEqual({ "Content-Type": "application/json", "Connect-Protocol-Version": "1" })
@@ -79,28 +79,100 @@ test("a hidden quota isn't shown, nor one with no reset; ACUs with a limit are",
   expect(u).toEqual({
     until: "2026-10-26T21:45:55Z",
     windows: [{ name: "ACUs", used: 25, display: "12.5 / 50 ACUs", resetsAt: "2026-10-26T21:45:55Z", aside: true }],
-    signIn: "kept",
+    signIn: "renewed",
   })
 })
 
 test("a plan billed otherwise, with resets and no share given, has no quota windows", async () => {
   const s = status({ dailyQuotaRemainingPercent: undefined, weeklyQuotaRemainingPercent: undefined, overageBalanceMicros: undefined })
   s.userStatus.planStatus.planInfo.billingStrategy = "BILLING_STRATEGY_CREDITS"
-  expect((await run(auth, () => Response.json(s))).u).toEqual({ until: "2026-10-26T21:45:55Z", windows: [], signIn: "kept" })
+  expect((await run(auth, () => Response.json(s))).u).toEqual({ until: "2026-10-26T21:45:55Z", windows: [], signIn: "renewed" })
 })
 
 test("a plan without quotas has no windows, and leaves the row's plan be", async () => {
   const s = { userStatus: { planStatus: { planInfo: { planName: "Free" } } } }
-  expect((await run(auth, () => Response.json(s))).u).toEqual({ windows: [], signIn: "kept" })
+  expect((await run(auth, () => Response.json(s))).u).toEqual({ windows: [], signIn: "renewed" })
 })
 
-// the built-in read no usage, so none marked the account: a refused key
-// says to sign in again, and says the account is kept
-test("a refused key says to sign in again, the account kept", async () => {
+test("usage enriches an older sign-in with its organization and keeps each org's quota pool separate", async () => {
+  const saved = []
+  const hooks = await DevinAuthPlugin({
+    client: {
+      auth: {
+        set: async (opts) => {
+          saved.push(opts)
+        },
+      },
+    },
+  })
+  globalThis.fetch = async (_, init) => {
+    const apiKey = JSON.parse(init.body).metadata.apiKey
+    if (apiKey === "key-org-1") {
+      return Response.json({
+        userStatus: {
+          name: "sky",
+          email: "m@x.dev",
+          teamId: "devin-team$account-1",
+          teamsTier: "TEAMS_TIER_DEVIN_MAX",
+          planStatus: {
+            planInfo: {
+              planName: "Max",
+              teamsTier: "TEAMS_TIER_DEVIN_MAX",
+              billingStrategy: "BILLING_STRATEGY_QUOTA",
+              devinInfo: { orgId: "org_1", accountDisplayName: "opt" },
+            },
+            dailyQuotaRemainingPercent: 80,
+            weeklyQuotaRemainingPercent: 60,
+            dailyQuotaResetAtUnix: "1790841600",
+            weeklyQuotaResetAtUnix: "1791100800",
+          },
+        },
+      })
+    }
+    return Response.json({
+      userStatus: {
+        name: "sky",
+        email: "m@x.dev",
+        teamId: "devin-team$account-2",
+        teamsTier: "TEAMS_TIER_DEVIN_MAX",
+        planStatus: {
+          planInfo: {
+            planName: "Max",
+            teamsTier: "TEAMS_TIER_DEVIN_MAX",
+            billingStrategy: "BILLING_STRATEGY_QUOTA",
+            devinInfo: { orgId: "org_2", accountDisplayName: "lab" },
+          },
+          dailyQuotaRemainingPercent: 25,
+          weeklyQuotaRemainingPercent: 10,
+          dailyQuotaResetAtUnix: "1790841600",
+          weeklyQuotaResetAtUnix: "1791100800",
+        },
+      },
+    })
+  }
+  const u1 = await hooks.auth.usage(async () => ({ type: "api", key: "key-org-1", metadata: { email: "m@x.dev", plan: "Devin Max" } }))
+  const u2 = await hooks.auth.usage(async () => ({ type: "api", key: "key-org-2", metadata: { email: "m@x.dev · lab", plan: "Devin Max", orgId: "org_2", teamId: "devin-team$account-2" } }))
+  expect(u1.windows.map((w) => w.used)).toEqual([20, 40])
+  expect(u2.windows.map((w) => w.used)).toEqual([75, 90])
+  expect(saved).toEqual([
+    {
+      path: { id: "devin" },
+      body: {
+        type: "api",
+        key: "key-org-1",
+        metadata: { email: "m@x.dev · opt", plan: "Devin Max", orgId: "org_1", teamId: "devin-team$account-1" },
+      },
+    },
+  ])
+})
+
+// a refused key marks the account signed out, so magpie passes over it
+// and its row offers Sign in again (blue12345655 on Discord); a 500 keeps it
+test("a refused key says to sign in again, the account signed out", async () => {
   const { u } = await run(auth, () => Response.json({ code: "unauthenticated", message: "invalid api key" }, { status: 401 }))
-  expect(u).toEqual({ error: "Devin's sign-in has expired — sign in again", windows: [], signIn: "kept" })
+  expect(u).toEqual({ error: "Devin's sign-in has expired — sign in again", windows: [], signIn: "expired" })
   const bare = await run(auth, () => new Response("", { status: 401 }))
-  expect(bare.u).toEqual({ error: "Devin's sign-in has expired — sign in again", windows: [], signIn: "kept" })
+  expect(bare.u).toEqual({ error: "Devin's sign-in has expired — sign in again", windows: [], signIn: "expired" })
   expect((await run(auth, () => new Response("", { status: 500 }))).u.signIn).toBe("kept")
   expect((await run({ type: "oauth" }, () => Response.json({}))).u).toEqual({ error: "Devin isn't signed in", signIn: "kept" })
 })

@@ -2,11 +2,12 @@
 //
 // Raccoon signs in through xiaohuanxiong.com's desktop authorization page
 // (/code/authorize -> office-raccoon://auth/callback?code=...&state=...), or
-// reads the live session Raccoon's desktop app keeps in
-// ~/.box-agent/config/auth.json (read-only). Chats are OpenAI-compatible chat
-// completions at /api/web/llm/v2/chat/completions.
+// reads the live session Raccoon's desktop app keeps in its auth.json
+// (read-only; desktopAuthCandidates lists where). Chats are OpenAI-compatible
+// chat completions at /api/web/llm/v2/chat/completions.
 
-import { randomUUID } from "node:crypto"
+import { randomUUID, randomBytes } from "node:crypto"
+import { createServer } from "node:http"
 import { readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -95,6 +96,63 @@ function extractDisplayName(claims) {
   return String(claims?.name ?? "").trim()
 }
 
+// ---- the card's name --------------------------------------------------------
+
+/**
+ * A phone number as the cards show it: `86 13800138000` / `0086-…` / bare /
+ * already masked → `138****8000`.
+ */
+function maskPhone(raw) {
+  let digits = String(raw ?? "").replace(/\D/g, "")
+  if (digits.startsWith("0086") && digits.length - 4 >= 7) digits = digits.slice(4)
+  else if (digits.startsWith("86") && digits.length - 2 >= 7) digits = digits.slice(2)
+  // a phone is 11 digits; a shorter run is not a number to mask
+  if (digits.length < 11) return ""
+  return `${digits.slice(0, 3)}****${digits.slice(-4)}`
+}
+
+// One read per token, re-read after PHONE_TTL_MS; stale entries are dropped
+// when the map passes PHONE_CAP, so it does not grow for the life of the host.
+const PHONE_CAP = 2048
+const phoneByToken = new Map()
+const PHONE_TTL_MS = 6 * 60 * 60 * 1000
+
+/**
+ * The account's own phone number, read from the web API with the token the
+ * sign-in already holds (`GET /api/web/auth/v1/user_info` answers `data.phone`,
+ * measured `13800138000` on an `sms`-registered account).
+ *
+ * The JWT names the signer only by `Raccoon-pu-<uuid>` — an id, not a name —
+ * so the card used to show that string. Best effort: no token, a refusal or an
+ * answer without a number leaves the JWT's name on the card, and never costs a
+ * sign-in.
+ */
+async function accountPhoneOf(access) {
+  const token = stripBearer(access)
+  if (!token) return ""
+  const hit = phoneByToken.get(token)
+  if (hit && Date.now() - hit.at < PHONE_TTL_MS) return hit.phone
+  try {
+    const res = await fetch(`${mainOrigin()}/api/web/auth/v1/user_info`, {
+      headers: { Accept: "application/json", Authorization: "Bearer " + token },
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) return ""
+    const payload = await res.json().catch(() => null)
+    const phone = maskPhone(payload?.data?.phone)
+    if (phone) {
+      if (phoneByToken.size >= PHONE_CAP) {
+        for (const [k, v] of phoneByToken) if (Date.now() - v.at >= PHONE_TTL_MS) phoneByToken.delete(k)
+        if (phoneByToken.size >= PHONE_CAP * 2) phoneByToken.clear()
+      }
+      phoneByToken.set(token, { at: Date.now(), phone })
+    }
+    return phone
+  } catch {
+    return ""
+  }
+}
+
 function vendorErrorText(payload, fallback) {
   for (const k of ["details", "message", "msg"]) {
     if (typeof payload?.[k] === "string" && payload[k].trim()) return payload[k].trim()
@@ -105,14 +163,47 @@ function vendorErrorText(payload, fallback) {
   return fallback
 }
 
-// ---- Desktop auth.json (~/.box-agent/config/auth.json, read-only) -----------
+// ---- Desktop auth.json (read-only) ------------------------------------------
+//
+// The desktop app has moved this file between releases. Builds that keep a
+// client profile (1.1.x) put the box-agent home inside it and write
+// <profile>/agent/config/auth.json, with the profile at
+//   Windows: %USERPROFILE%\.office-raccoon (moved there from %APPDATA%)
+//   macOS:   ~/Library/Application Support/office-raccoon
+// (clientProfile.ts: openDefaultClientProfile, app.getPath("appData")).
+// Older installs, and a profile the app still treats as legacy user data,
+// keep ~/.box-agent/config/auth.json. Every layout is read, the profile ones
+// first, so either build is picked up without an env override.
 
-function desktopAuthPath() {
+// The arguments are for tests: Bun reads homedir() once, at start.
+function appDataDir(home, platform, env) {
+  if (platform === "win32") return String(env.APPDATA ?? "").trim() || join(home, "AppData", "Roaming")
+  if (platform === "darwin") return join(home, "Library", "Application Support")
+  return String(env.XDG_CONFIG_HOME ?? "").trim() || join(home, ".config")
+}
+
+function desktopAuthCandidates(home = homedir(), platform = process.platform, env = process.env) {
   for (const envKey of ["RACCOON_BOX_AGENT_CONFIG_DIR", "BOX_AGENT_CONFIG_DIR"]) {
-    const v = String(process.env[envKey] ?? "").trim()
-    if (v) return join(v, "auth.json")
+    const v = String(env[envKey] ?? "").trim()
+    if (v) return [join(v, "auth.json")]
   }
-  return join(homedir(), ".box-agent", "config", "auth.json")
+  const profiles = [join(appDataDir(home, platform, env), "office-raccoon")]
+  if (platform === "win32") profiles.unshift(join(home, ".office-raccoon"))
+  return [
+    ...profiles.map((p) => join(p, "agent", "config", "auth.json")),
+    join(home, ".box-agent", "config", "auth.json"),
+  ]
+}
+
+// The first candidate that is a file, else the first (which then reads as
+// not signed in).
+function desktopAuthPath(candidates = desktopAuthCandidates()) {
+  for (const candidate of candidates) {
+    try {
+      if (statSync(candidate).isFile()) return candidate
+    } catch {}
+  }
+  return candidates[0]
 }
 
 function readDesktopAuth() {
@@ -207,30 +298,62 @@ function isStale(a, marginMs = EARLY_MS) {
   return exp > 0 && Date.now() >= exp - marginMs
 }
 
-// Desktop sign-in is strictly read-only: never write ~/.box-agent/config/auth.json
-// and never spend the desktop app's refresh token.
+// Desktop sign-in is strictly read-only: never write the app's auth.json
+// and never spend the desktop app's refresh token. The app holds one account
+// at a time, so a seat keeps the token it was signed in with, saved on its own
+// record through the client (as kiro does), and reads the app only to take a
+// newer token for that same account. The app's current account never stands in
+// for a seat it does not name: a seat answered with another account's token
+// was billed to the wrong account and reported that account's credits, with
+// nothing anywhere saying so (plugins #166).
+//
+// sameAccount says whether a seat names the account the app holds now. A uid
+// the read token does not carry never agrees: the seat's own token is used, or
+// the seat asks to be signed in again, rather than being answered with
+// credentials it cannot be shown to own. A seat that names no account at all
+// has nothing to protect and means the app's own account.
+function sameAccount(seat, read) {
+  if (!read) return false
+  if (seat?.uid) return !!read.uid && String(seat.uid) === String(read.uid)
+  // accountId is the identity, as on main: the seat's own name is what the
+  // app's read carries for the same account.
+  if (seat?.accountId) return !!read.name && String(seat.accountId) === String(read.name)
+  return true
+}
+
 async function currentAuth(client, auth, force = false) {
   if (auth?.source === "desktop") {
     const d = readDesktopAuth()
-    if (!d) {
-      const err = new Error("商汤小浣熊桌面端未登录，请打开商汤小浣熊客户端登录")
-      err.signIn = "expired"
-      throw err
+    // the app holds this seat's account: its token is the newest there is,
+    // and a seat asked again after a refusal takes it
+    if (sameAccount(auth, d) && !isStale(d, EARLY_MS)) {
+      let next = { ...auth, ...d }
+      if (d.access && d.access !== auth.access) {
+        // A desktop seat stored by an earlier version is named `Raccoon-pu-…`:
+        // when the app's token changes, read the phone and keep it on the
+        // record (magpie replaces an account only at sign-in, merging fields
+        // on renewal).
+        const phone = await accountPhoneOf(d.access)
+        if (phone) next = { ...next, phone, cardName: phone }
+        try {
+          await client?.auth?.set?.({ path: { id: PROVIDER_ID }, body: next })
+        } catch {}
+      }
+      return { a: next, didRenew: false }
     }
-    if (
-      (auth.uid && d.uid && String(auth.uid) !== String(d.uid)) ||
-      (!auth.uid && auth.accountId && d.name && String(auth.accountId) !== String(d.name))
-    ) {
-      const err = new Error("商汤小浣熊桌面端已切换为其他账号，请重新登录")
-      err.signIn = "expired"
-      throw err
-    }
-    if (force || isStale(d, EARLY_MS)) {
+    // the app holds another account, or none: this seat goes on with the
+    // token it was signed in with until that token ends
+    if (!force && auth.access && !isStale(auth, EARLY_MS)) return { a: { ...auth }, didRenew: false }
+    if (sameAccount(auth, d)) {
       const err = new Error("商汤小浣熊桌面端登录态已过期，请打开商汤小浣熊客户端重新登录")
       err.signIn = "expired"
       throw err
     }
-    return { a: { ...auth, ...d }, didRenew: false }
+    const err = new Error(
+      d ? "商汤小浣熊桌面端已切换为其他账号，请重新登录" : "商汤小浣熊桌面端未登录，请打开商汤小浣熊客户端登录",
+    )
+    err.signIn = "expired"
+    throw err
   }
 
   let a = { ...auth }
@@ -493,11 +616,24 @@ async function claimDesktopOnboardingGrant(token) {
   return { points: 0, settled: false }
 }
 
+// allBills is the account's whole bill history, newest first. The bills
+// endpoint ignores paging.offset and always says total 0, so it can only be
+// asked for the newest N rows; 200 covered under a day of an active account
+// and left out the large grants a balance is made of (plugins #223).
+async function allBills(token) {
+  let bills = null
+  for (const limit of [1000, 5000]) {
+    bills = await apiGetJson(`/api/web/points/v1/bills?paging.limit=${limit}&paging.offset=0`, token)
+    if (!Array.isArray(bills?.items) || bills.items.length < limit) break
+  }
+  return bills
+}
+
 async function queryUsage(token) {
   const [points, entitlement, bills] = await Promise.all([
     apiGetJson("/api/web/points/v1/balance", token),
     apiGetJson("/api/web/auth/v1/entitlement_info", token).catch(() => null),
-    apiGetJson("/api/web/points/v1/bills?paging.limit=200&paging.offset=0", token).catch(() => null),
+    allBills(token).catch(() => null),
   ])
   const avail = Math.floor(Number(points?.available_points) || 0)
 
@@ -719,24 +855,96 @@ async function exchangeAuthCode(code) {
   return { access, refresh }
 }
 
-function toSuccessAuth(access, refresh, extra = {}) {
+async function toSuccessAuth(access, refresh, extra = {}) {
   const claims = decodeJwtClaims(access)
   const uid = extractUserId(claims)
   const name = extractDisplayName(claims)
   const expires = jwtExpiryMs(access)
+  const phone = await accountPhoneOf(access)
   return {
     type: "success",
     access,
     refresh: refresh || "",
     expires,
+    // accountId is the account's identity in magpie (its user-set name, proxy,
+    // model picks and a gateway key's list hang off it), so it stays what main
+    // computes; the phone is a separate field (`phone`, `cardName`) that usage
+    // shows as the card's name.
     accountId: name || (uid ? `Raccoon-${uid}` : PROVIDER_NAME),
+    ...(phone ? { phone, cardName: phone } : {}),
     uid: uid || "",
     ...(name ? { name } : {}),
     ...extra,
   }
 }
 
-function browserSignIn() {
+async function browserSignIn(timeoutMs = 10 * 60 * 1000) {
+  // The current authorize page accepts desktop loopback callbacks only with
+  // a 64-character hex state and a 127.0.0.1 /auth/callback URL.
+  const state = randomBytes(32).toString("hex")
+  const url = new URL(buildAuthorizeUrl(state))
+  url.searchParams.set("desktop_callback", "loopback")
+  let complete, timer, origin, received = false, settled = false
+  const done = new Promise((resolve) => { complete = resolve })
+  const finish = (result) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    complete(result)
+    server.close()
+    server.closeIdleConnections?.()
+  }
+  const server = createServer(async (req, res) => {
+    const reply = (status, text) => {
+      res.writeHead(status, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+        "Content-Security-Policy": "default-src 'none'",
+      })
+      res.end(text)
+    }
+    const url = new URL(req.url || "/", "http://127.0.0.1")
+    if (req.headers.host !== origin || url.pathname !== "/auth/callback") return reply(404, "Not found")
+    if (req.method !== "GET") return reply(405, "Method not allowed")
+    const q = url.searchParams
+    if (q.getAll("state").length !== 1 || q.get("state") !== state) return reply(400, "回调不属于本次登录，请回到原授权页重试。")
+    if (settled || received) return reply(409, "本次回调已经处理，请回到 Magpie 查看结果。")
+    if (q.get("error")) {
+      reply(400, "登录未获授权，请回到 Magpie 重新登录。")
+      finish({ type: "failed", error: "商汤小浣熊授权被拒绝，请重新登录" })
+      return
+    }
+    const code = q.get("code") || ""
+    if (q.getAll("code").length !== 1 || !code || code.length > 4096) return reply(400, "回调缺少有效授权码，请回到原授权页重试。")
+    received = true
+    try {
+      const tokens = await exchangeAuthCode(code)
+      if (settled) return reply(408, "登录已超时，请回到 Magpie 重新登录。")
+      reply(200, "商汤小浣熊登录成功，可以关闭此页并返回 Magpie。")
+      finish(await toSuccessAuth(tokens.access, tokens.refresh))
+    } catch (e) {
+      reply(502, "登录未完成，请返回 Magpie 查看错误并重新登录。")
+      finish({ type: "failed", error: e?.message ?? String(e) })
+    }
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  origin = `127.0.0.1:${server.address().port}`
+  url.searchParams.set("redirect", `http://${origin}/auth/callback`)
+  timer = setTimeout(() => finish({ type: "failed", error: "商汤小浣熊登录超时，请重新登录" }), timeoutMs)
+  timer.unref?.()
+  return {
+    url: url.toString(),
+    instructions: "在浏览器完成商汤小浣熊登录并确认授权后，会自动返回此处；无需填写短信验证码或复制网页地址。",
+    method: "auto",
+    async callback() { return await done },
+  }
+}
+
+function manualSignIn() {
   const state = randomUUID()
   const url = buildAuthorizeUrl(state)
   return {
@@ -748,7 +956,7 @@ function browserSignIn() {
       try {
         const parsed = parseCallbackInput(input, state)
         const tokens = parsed.direct ? parsed.direct : await exchangeAuthCode(parsed.code)
-        return toSuccessAuth(tokens.access, tokens.refresh)
+        return await toSuccessAuth(tokens.access, tokens.refresh)
       } catch (e) {
         return { type: "failed", error: e?.message ?? String(e) }
       }
@@ -759,21 +967,35 @@ function browserSignIn() {
 function desktopSignIn() {
   return {
     url: "",
-    instructions: "直接复用本机商汤小浣熊客户端的实时登录态 (~/.box-agent/config/auth.json)。",
+    instructions: "直接复用本机商汤小浣熊客户端的实时登录态（只读，不写入桌面端文件）。",
     method: "auto",
     async callback() {
+      // A new seat takes the account the app holds now, and its token, and
+      // keeps them on its own record: the app is signed in to one account at
+      // a time and drops the previous one's token as soon as it rotates off
+      // disk. Only the app's own account is offered here, so a seat is never
+      // quietly handed some other account's credentials.
       const d = readDesktopAuth()
-      if (!d) return { type: "failed", error: "未检测到本机商汤小浣熊登录态 (~/.box-agent/config/auth.json)" }
+      if (!d) {
+        return {
+          type: "failed",
+          error: `未检测到本机商汤小浣熊登录态（已查找 ${desktopAuthCandidates().join("、")}）`,
+        }
+      }
       if (isStale(d, EARLY_MS)) {
         return { type: "failed", error: "商汤小浣熊桌面端登录态已过期，请先打开商汤小浣熊客户端重新登录" }
       }
+      // the app's own token reads the phone too, so a seat added here is named
+      // like one signed in through the browser
+      const phone = await accountPhoneOf(d.access)
       return {
         type: "success",
-        access: "",
+        access: d.access,
         refresh: "",
-        expires: 0,
+        expires: d.expires,
         source: "desktop",
         accountId: d.name || PROVIDER_NAME,
+        ...(phone ? { phone, cardName: phone } : {}),
         uid: d.uid || "",
       }
     },
@@ -822,15 +1044,20 @@ export const RaccoonAuthPlugin = async ({ client }) => {
       provider: PROVIDER_ID,
       refreshLead: LEAD_MS,
       async refresh(auth) {
-        if (auth?.type !== "oauth" || auth.source === "desktop" || !auth.access || !auth.refresh) return undefined
+        if (auth?.type !== "oauth" || !auth.access || auth.source === "desktop") return undefined
+        if (!auth.refresh) return undefined
         const { a, didRenew } = await currentAuth(client, auth, true)
         if (!didRenew) return undefined
+        // An account stored by an older version was named by `Raccoon-pu-…`;
+        // its renewal is where the phone can still be read and put on the card.
+        const phone = await accountPhoneOf(a.access)
         return {
           access: a.access,
           refresh: a.refresh,
           expires: a.expires,
           ...(a.uid ? { uid: a.uid } : {}),
           ...(a.name ? { name: a.name } : {}),
+          ...(phone ? { phone, cardName: phone } : {}),
         }
       },
       async loader(getAuth) {
@@ -922,7 +1149,9 @@ export const RaccoonAuthPlugin = async ({ client }) => {
           }
           return {
             ...result,
-            user: a.name || auth.accountId || a.uid,
+            // The card's name: the phone when the record has one, else what
+            // the account is called (an older record has no phone).
+            user: a.cardName || a.accountId || a.name || a.uid,
             signIn: didRenew ? "renewed" : "kept",
           }
         } catch (e) {
@@ -955,13 +1184,18 @@ export const RaccoonAuthPlugin = async ({ client }) => {
       methods: [
         {
           type: "oauth",
-          label: "商汤小浣熊账号 (浏览器登录 / 粘贴回调或 Token)",
+          label: "商汤小浣熊账号 (浏览器登录 / 自动返回)",
           authorize: async () => browserSignIn(),
         },
         {
           type: "oauth",
-          label: "商汤小浣熊桌面端登录态 (~/.box-agent/config/auth.json)",
+          label: "商汤小浣熊桌面端登录态（读取本机客户端）",
           authorize: async () => desktopSignIn(),
+        },
+        {
+          type: "oauth",
+          label: "手动粘贴回调链接或 Token（非短信验证码）",
+          authorize: async () => manualSignIn(),
         },
       ],
     },
@@ -969,6 +1203,10 @@ export const RaccoonAuthPlugin = async ({ client }) => {
 }
 
 export const _internal = {
+  browserSignIn,
+  desktopAuthPath,
+  desktopAuthCandidates,
+  sameAccount,
   stripBearer,
   decodeJwtClaims,
   jwtExpiryMs,

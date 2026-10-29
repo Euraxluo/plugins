@@ -65,13 +65,22 @@ Each model is served on the one API droid uses for it:
 |---|---|
 | Anthropic Messages (`/api/llm/a`) | Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8 (each also in Fast Mode), Sonnet 5.5, Sonnet 5, Sonnet 4.6, Haiku 5.5, Haiku 4.5, MiniMax M2.7 |
 | OpenAI Responses (`/api/llm/o/v1`) | GPT-6.1 Sol, GPT-6 Sol/Astra/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.3-Codex (each also in Fast Mode), Grok 4.7, Grok 4.6 |
-| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, Kimi K3, DeepSeek V4.1 Flash, Qwen3.8 Max, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3 Ultra |
+| Chat completions (`/api/llm/o/v1`) | GLM-5.3, GLM-5.3-Flash, GLM-5.2, Kimi K3, DeepSeek V4.1 Flash, DeepSeek V4.1 Flash 1017, Qwen3.8 Max, MiniMax M3, Mistral Large 4, Mistral Medium 3.5, Nemotron 3 Ultra |
 | Gemini generate (`/api/llm/g/v1/generate`) | Gemini 4 Argon, Gemini 3.1 Pro, Gemini 3.8/3.7/3.6/3.5 Flash, Gemini 3 Flash |
 
 Reasoning efforts are the variants droid offers for each model. DeepSeek V4.1
-Flash, Kimi K3 and GLM-5.2 have `none`, droid's "off": they stop thinking.
+Flash (1017 too), Kimi K3 and GLM-5.2 have `none`, droid's "off": they stop
+thinking.
 Reasoning is mandatory on GLM-5.3 and GLM-5.3-Flash (Fireworks turns `none`
 away), so `low` is their least.
+
+DeepSeek V4.1 Flash 1017 (`deepseek-v4.1-flash-1017`) is a separate model
+entry, with droid 0.251.0's 1,040,000-token context, 131,072-token output,
+image support, `none`/`low`/`high`/`max` efforts and 0.12x token multiplier.
+Like every other model here it goes to its registry's default upstream,
+`apiProviders[0]`, which is Fireworks, as droid sends it with
+`x-provider-routing-source: registry_default`. Factory gates 1017 with a
+feature flag, so availability still depends on the account.
 
 A model's price is its token multiplier in droid's registry
 (`cost.tokenMultiplier`), which magpie shows beside the model as its rate
@@ -115,6 +124,30 @@ magpie plugin add @magpie-community/opencode-factory-auth
 magpie plugin login factory
 ```
 
+## Standard usage only (optional)
+
+In magpie, open the Factory provider, turn on **Standard usage only** under
+**Plugin options**, and save (or set `"pluginOptions": {"factory":
+{"standard_only": true}}` in magpie's settings.json). It is off by default,
+applies to every Factory account, and takes effect at each account's next
+usage reading.
+
+When on, the plugin reports the Standard 5 hours, 7 days and 30 days
+windows as counting every model, Droid Core's open models too, whether or
+not the account has Extra usage. Droid Core's windows and Extra usage are
+still shown but never keep an account in routing.
+
+magpie leaves an account out before sending only when it is held at a
+usage cap, so pair the option with a cap on each account, for example
+`magpie provider account-cap factory <account> 99`. An account is then
+skipped once any Standard window reaches the cap, the request goes to the
+next account with the same model, and when every account is held magpie
+answers 429 without sending. Without a cap, an account whose Standard
+usage is gone is still tried, and Factory may serve a Droid Core model
+from Core or Extra usage. Readings lag, so the last requests before a
+window fills still go out; to never spend Extra usage, turn it off in
+Factory.
+
 ## Claude Code through magpie
 
 Factory's Anthropic route requires Droid's fixed client preamble and
@@ -128,9 +161,14 @@ The fixed Claude identity is recognized as a complete first line too when
 magpie joins it with the following system instructions into one text block.
 
 For the built-in `update-config` skill, the adapter changes only the known
-self-reference "not Claude" to "not the assistant" inside a complete
-generated skill-list reminder. Its configuration instructions, other
-skill descriptions, tools and caller text are preserved.
+self-reference "not Claude" to "not the assistant" inside that skill's entry
+in a generated skill list. Claude Code renders the entry two ways: as a
+system message (`- update-config: …`) and, in the `claude-code-guide` agent's
+own system prompt under `# User's Current Configuration`, with the slash that
+invokes it (`- /update-config: …`). Both spellings are adapted, and only the
+sentence Factory refuses changes, so the entry's name and the rest of the list
+stay. Its configuration instructions, other skill descriptions, tools and
+caller text are preserved.
 
 Claude 5 can send runtime metadata in string-content `system` messages
 instead of user-message reminders. The plugin adapts the known environment,
@@ -204,8 +242,9 @@ incomplete and hook-owned forms are left alone.
 
 Factory can also refuse fixed client phrases quoted in tool results, such as
 the identity/environment definitions printed when inspecting this plugin's
-source, or the compaction opening embedded in a historical session JSONL
-record. Those text results are represented as JSON strings with explicit
+source, the compaction opening embedded in a historical session JSONL
+record, or pi's opening sentence in a model snapshot of its own system
+prompt. Those text results are represented as JSON strings with explicit
 decoding instructions and Unicode escapes for the fixed phrases. Decoding
 the string recovers the exact original output, including quotes, backslashes
 and Unicode; the plugin does not delete the output or replace its identities
@@ -223,6 +262,24 @@ attachments and generated system bundles, including notifications before a
 token marker. Changed-file text supplied by hooks, quoted or incomplete
 notifications, and notices that omit the snippet are left alone. Model and
 environment metadata after non-startup hooks retain their existing adaptation.
+
+Claude Code's instructions reminder names `~/.claude/CLAUDE.md` "(user's
+private global instructions for all projects)", which Factory refuses; in
+the generated reminder it becomes "(global instructions)". Claude Code
+renders that reminder two ways: the first copy opens with "Codebase and user
+instructions are shown below", and a copy re-read after the files changed
+(after compaction, a settings sync and the like) opens with "Instruction
+files were re-read …; these differ from their earlier copies" or "These
+instruction files changed". Both are adapted, in text blocks, string user
+turns and chat completions' joined user text; text after the reminder and
+a user's own mention of the phrase stay as written. A tool result that
+quotes the phrase (reading Claude Code's renderer, say) gets the lossless
+JSON encoding above.
+
+When Factory still answers 403, the error magpie and the agent see keeps
+Factory's request id (from `x-request-id`, `request-id` or `cf-ray`, or the
+body) and its error code and type, and the Anthropic-route body carries
+`request_id`, so the refusal can be named to Factory.
 
 Use magpie's Claude Code integration to select the Factory provider.
 magpie manages the provider-specific client settings, including capability

@@ -17,8 +17,21 @@ Power) and makes its requests, in OpenCode and in magpie. Provider id:
   - Builder ID and Identity Center come back with an AWS sign-in URL and
     region. The plugin registers a client with AWS's OIDC service, sends
     the browser to AWS, and trades the code AWS returns.
-  - The account is named by the email Kiro has for it (`Get-Usage-Limits`),
-    and its plan is read from the same call.
+  - The account is named by the email Kiro has for it (`Get-Usage-Limits`)
+    and the way it was signed in to: `email (Google)`, `email (GitHub)`,
+    `email (Builder ID)`, `email (IAM Identity Center)`, `email
+    (Internal)`. Its plan is read from the same call, and its usage names
+    it the same way.
+  - Kiro keeps a Google, a GitHub, a Builder ID and an Identity Center
+    sign-in of one email as different accounts. The sign-in carries a `uid`
+    (`google`, `github`, `builderid`, `enterprise`), so magpie keeps each one
+    beside the others, and a sign-in again the same way replaces only its
+    own account. An account signed in before 0.1.13 is given its `uid`,
+    and one named by its bare email before 0.1.14 its name, on its first
+    request, model listing, usage read or renewal. Until then, a sign-in
+    again the same way goes beside it rather than replacing it: magpie
+    matches a sign-in by its name, and the plugin can't see the other
+    accounts to match it by `uid`.
   - A company's own identity provider (`external_idp`) is not supported
     here. Sign in with `kiro-cli login` and use the next method instead.
 - **Kiro CLI's or Kiro IDE's sign-in**: uses the account kiro-cli is signed
@@ -33,8 +46,12 @@ Power) and makes its requests, in OpenCode and in magpie. Provider id:
   kiro-cli refreshes its own token first (`kiro-cli debug refresh-auth-token`).
   A token the plugin refreshes itself is written back, so kiro-cli and the
   IDE go on with it.
-- **Kiro API key (`ksk_…`)**: sent with `tokentype: API_KEY`. Its profile is
-  found with `GetProfile`.
+- **Kiro API key (`ksk_…`)**: sent with `tokentype: API_KEY`, as kiro-cli
+  sends it. `GetProfile` is asked in us-east-1, then eu-central-1, for the
+  region the key's profile is in; a key it finds none for is used in
+  us-east-1, as kiro-cli uses it. Its models are listed with the control
+  plane's `ListAvailableModels` and its credits with `GetUsageLimits`, and
+  no profile is named in its calls, as kiro-cli names none.
 
 A browser sign-in is kept where OpenCode keeps sign-ins (`auth.json`; in
 magpie, `plugin-auth.json`) as an `oauth` entry. The entry holds the
@@ -45,6 +62,9 @@ Refreshing such a sign-in:
   plugin's `auth.refresh`, once for the account and before its requests,
   models and usage need it. magpie saves the new token. A failed renewal,
   even one Kiro refused, doesn't mark the account: it is tried again.
+  The usage read does: a sign-in Kiro refused there marks the account
+  signed out (`signIn: "expired"`), so magpie passes over it and offers
+  Sign in again on its row, and a clean read takes the mark off.
 - OpenCode doesn't call that hook: there the token is refreshed 2 minutes
   before it expires, before a request, and saved.
 - Either way, a token Kiro turns down (a 403) is refreshed and the request
@@ -79,6 +99,11 @@ request:
   - A tool's images (a screenshot, Codex's view_image) go with the
     message that answers the call, as Kiro's tool results hold text alone.
   - Only the latest images are sent.
+  - An image Kiro would turn away for size (over 5 MiB as Base64, which is
+    3.75 MiB of file) is made smaller on the request being sent: its long
+    edge brought to 2000 pixels, then WebP or JPEG, smaller each try. One
+    that can't be read or brought under is replaced by a short note, so the
+    conversation goes on (#428). Smaller images are sent as they are.
   - Tools the history used but the request doesn't offer are declared.
 - It turns the AWS event stream Kiro answers with back into Messages'
   events (streamed) or one message. The reply includes text, thinking,

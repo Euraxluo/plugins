@@ -48,7 +48,7 @@ test("China asks the activity status, then claims through /v2", async () => {
   expect(c.init.body).toBe("{}")
   expect(c.headers.get("authorization")).toBe("Bearer at")
   expect(c.headers.get("x-user-id")).toBe("u")
-  expect(c.headers.get("user-agent")).toBe("WorkBuddy/5.5.6")
+  expect(c.headers.get("user-agent")).toBe("WorkBuddy/5.9.3")
 })
 
 test("the activity status already claimed is done without another claim", async () => {
@@ -158,4 +158,13 @@ test("WorkBuddy AI's plugin has no check-in", async () => {
   // the meter is China's; the AI build has no claim endpoint (#47)
   const hooks = await WorkBuddyAIAuthPlugin({ client: {} })
   expect(hooks.auth.checkin).toBeUndefined()
+})
+
+test("an API key account is ineligible, and nothing is asked", async () => {
+  // a key reads no credits, so a failed answer would only be asked again
+  // every 30 minutes all day
+  const calls = serve({})
+  const got = await checkinOf(WorkBuddyAuthPlugin, { type: "api", key: "ck_test" })
+  expect(got.outcome).toBe("ineligible")
+  expect(calls).toHaveLength(0)
 })

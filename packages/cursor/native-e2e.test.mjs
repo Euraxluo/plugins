@@ -96,6 +96,11 @@ async function agent(options = {}) {
     const first = () => {
       if (options.stallInitial) return
       send(update(4, text(1, options.initialReasoning ?? "native planning one")))
+      // Cursor's own heartbeats, InteractionUpdate.heartbeat, and nothing else
+      if (options.serverHeartbeat) {
+        const beat = () => delay(() => { send(update(13, Buffer.alloc(0))); beat() }, options.serverHeartbeat)
+        beat()
+      }
       if (options.toolDisplay) {
         const at = Math.floor(options.toolDisplay.length / 2)
         send(update(1, text(1, options.toolDisplay.slice(0, at))))
@@ -103,6 +108,12 @@ async function agent(options = {}) {
       }
       if (options.unsupportedExec) { send(envelope(bin(2, message(uint(1, 77), bin(12, text(1, "synthetic shell request")))))); return }
       if (options.thinkingOnly) return
+      if (options.conflictingCount) {
+        const conflict = () => { send(update(27, uint(1, 2))); send(update(27, uint(1, 1))) }
+        if (options.initialReasoning === "") conflict()
+        else delay(conflict)
+        return
+      }
       if (options.progressiveFinal || options.finalOnly) {
         send(update(1, text(1, "progressive answer")))
         a.finish = () => {
@@ -138,6 +149,11 @@ async function agent(options = {}) {
         marker = received.get(firstID).content[0].text
         phase = 1
         send(update(4, text(1, "native planning two")))
+        if (options.secondConflictingCount) {
+          send(update(27, uint(1, 2)))
+          send(update(27, uint(1, 1)))
+          return
+        }
         send(tool(8, "call_a__fc_b", marker, { name: options.name })) // call-before-count in phase two
         if (!options.secondNoCount) send(update(27, uint(1, 1)))
         state(true)
@@ -1087,6 +1103,61 @@ for (const options of [{ noCount: true }, { cleanNoCount: true }]) test(`native 
   expect(a.closes).toEqual([])
 })
 
+for (const stream of [false, true]) test(`native retention: conflicting counts before visible ${stream ? "stream" : "JSON"} output rebuild exactly once`, async () => {
+  const a = await agent({ conflictingCount: true, ...(stream ? { initialReasoning: "" } : {}) })
+  const chat = initial({ stream })
+  const result = await a.ask(auth(), chat)
+  expect(result.status).toBe(200)
+  if (stream) {
+    expect(result.headers.get("X-Magpie-Cursor-Continuity")).toContain("reason=inconsistent-batch-count")
+    const sse = await result.text()
+    expect(sse).toContain("rebuilt:new-input")
+    expect(sse).toContain("[DONE]")
+    expect(sse).not.toContain("inconsistent native tool count")
+  } else {
+    rebuilt(result, "new-input")
+    expect(result.diagnostic).toContain("reason=inconsistent-batch-count")
+    expect(choice(result).message.reasoning_content).toBeUndefined()
+  }
+  expect(a.runs).toHaveLength(2)
+  expect(a.histories[1]).toEqual(a.histories[0])
+  expect(a.results).toEqual([])
+  expect(a.closes).toEqual([])
+  expect(a.errors).toEqual([])
+})
+
+test("native retention: conflicting counts after visible thinking never replay output", async () => {
+  const a = await agent({ conflictingCount: true })
+  const result = await a.ask(auth(), initial({ stream: true }))
+  const sse = await result.text()
+  expect(sse).toContain("native planning one")
+  expect(sse).toContain("inconsistent native tool count")
+  expect(sse).not.toContain("rebuilt:")
+  expect(a.runs).toHaveLength(1)
+  expect(a.results).toEqual([])
+})
+
+test("native retention: conflicting counts after submitted result never retry automatically", async () => {
+  const a = await agent({ secondConflictingCount: true }), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  const owner = [...nativeSessions.entries][0]
+  const next = continueWith(chat, first.body, ["already submitted exactly once"])
+  const failed = await a.ask(account, next)
+  expect(failed.status).toBe(502)
+  expect(failed.body.error.message).toContain("inconsistent native tool count")
+  // A result was actually written to this owner before its next step listed
+  // conflicting counts. Its error must forbid transparent replay even if
+  // the caller has not received any output from the resumed step.
+  expect(owner.resultSubmitted).toBe(true)
+  expect(owner.error).toMatchObject({ status: 502, retentionIneligible: false, continuityReason: "inconsistent-batch-count" })
+  expect(a.runs).toHaveLength(1)
+  expect(a.results).toHaveLength(1)
+  expect(a.closes).toEqual([7])
+  rebuilt(await a.ask(account, next), "already submitted exactly once")
+  expect(a.runs).toHaveLength(2)
+  expect(a.results).toHaveLength(1)
+})
+
 test("native retention: progressive thinking before missing count is not transparently replayed", async () => {
   NATIVE_LIMITS.batchWait = 45
   const a = await agent({ noCount: true })
@@ -1434,4 +1505,82 @@ test("native accounting: cancellation interrupts final debt collection and prese
   expect(later.body.usage.magpie_deferred).toEqual(EARLIER_DEFERRED)
   expect(_internal.owed.has(key)).toBe(false)
   expect(a.results).toEqual([])
+})
+
+// yetone/magpie#2672: a Run that sent some thinking and then nothing (no
+// text, call, count or TurnEnded) kept the reply open until the agent gave
+// up after 305 s, retained (native) or not (stateless, the path it was on).
+const sseOf = async (response) => {
+  const reader = response.body.getReader()
+  let sse = ""
+  for (;;) {
+    const part = await reader.read()
+    if (part.done) return sse
+    sse += new TextDecoder().decode(part.value)
+  }
+}
+for (const path of ["native", "stateless"]) {
+  test(`${path}: a Run silent after its thinking ends in an error within idle (#2672)`, async () => {
+    NATIVE_LIMITS.idle = 150
+    if (path === "stateless") NATIVE_LIMITS.perProcess = 0
+    const a = await agent({ thinkingOnly: true })
+    const response = await a.ask(auth(), initial({ stream: true }))
+    expect(response.headers.get("X-Magpie-Cursor-Continuity")).toMatch(path === "native" ? /^same-run/ : /^stateless/)
+    const started = Date.now()
+    const sse = await sseOf(response)
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(sse).toContain("native planning one")
+    expect(sse).toContain("Cursor went quiet: no message for 0 s, its last message thinking (try again)")
+    expect(sse).not.toContain("[DONE]")
+    await until(() => a.closedStreams === 1)
+  })
+
+  test(`${path}: Cursor's heartbeats alone don't keep a silent Run open past quiet (#2672)`, async () => {
+    Object.assign(NATIVE_LIMITS, { idle: 150, quiet: 400 })
+    if (path === "stateless") NATIVE_LIMITS.perProcess = 0
+    const a = await agent({ thinkingOnly: true, serverHeartbeat: 40 })
+    const response = await a.ask(auth(), initial({ stream: true }))
+    // the heartbeats branch names the wait as past quiet: that it ended so,
+    // and not on idle, is the check, not how long a loaded machine took
+    const sse = await sseOf(response)
+    const [, beats] = sse.match(/Cursor went quiet: (\d+) heartbeats and nothing else for \d+ s, its last message thinking/) ?? []
+    expect(Number(beats)).toBeGreaterThan(0)
+    await until(() => a.closedStreams === 1)
+  })
+}
+
+test("stateless: a call with no count, then silence, is an error, not a step of tool calls (#2672)", async () => {
+  Object.assign(NATIVE_LIMITS, { idle: 150, perProcess: 0 })
+  const a = await agent({ noCount: true, stateDelay: 10_000 })
+  const r = await a.ask(auth(), initial())
+  expect(r.status).toBe(502)
+  expect(r.body.error.message).toContain("Cursor went quiet")
+  expect(r.body.choices).toBeUndefined()
+})
+
+test("native: a Run parked for the caller's results longer than idle still continues (#2672)", async () => {
+  NATIVE_LIMITS.idle = 120
+  const a = await agent(), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  expect(first.status).toBe(200)
+  await new Promise((r) => setTimeout(r, 400))
+  const owner = [...nativeSessions.entries][0]
+  expect(owner.error).toBeUndefined()
+  const next = continueWith(chat, first.body, ["after a long tool"])
+  const second = await a.ask(account, next)
+  expect(second.status).toBe(200)
+  expect(second.diagnostic).toMatch(/^same-run/)
+  expect(a.runs).toHaveLength(1)
+})
+
+test("native: a continued Run that goes quiet after the caller's results ends within idle (#2672)", async () => {
+  NATIVE_LIMITS.idle = 150
+  const a = await agent({ finalAfterFirst: true, stallFinal: true }), account = auth(), chat = initial()
+  const first = await a.ask(account, chat)
+  expect(first.status).toBe(200)
+  expect(first.diagnostic).toMatch(/^same-run/)
+  const second = await a.ask(account, continueWith(chat, first.body, ["after the tool"]))
+  expect(second.status).toBe(502)
+  expect(second.body.error.message).toContain("Cursor went quiet: no message for")
+  expect(a.runs).toHaveLength(1)
 })
